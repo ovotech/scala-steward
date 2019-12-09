@@ -5,11 +5,11 @@ docker_sbt: &docker_sbt
     - image: circleci/openjdk:8-jdk-stretch
       environment:
         DEBIAN_FRONTEND: noninteractive
+        TERM: xterm
         AWS_DEFAULT_REGION: eu-west-1
   working_directory: ~/repo
   environment:
     JVM_OPTS: -Xmx3200m
-    TERM: xterm
 
 cache_save: &cache_save
   save_cache:
