@@ -6,10 +6,10 @@ docker_sbt: &docker_sbt
       environment:
         DEBIAN_FRONTEND: noninteractive
         AWS_DEFAULT_REGION: eu-west-1
-        TERM: xterm
   working_directory: ~/repo
   environment:
     JVM_OPTS: -Xmx3200m
+    TERM: xterm
 
 cache_save: &cache_save
   save_cache:
