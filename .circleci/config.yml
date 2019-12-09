@@ -1,0 +1,44 @@
+version: 2.1
+
+docker_sbt: &docker_sbt
+  docker:
+    - image: circleci/openjdk:8-jdk-stretch
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+        AWS_DEFAULT_REGION: eu-west-1
+  working_directory: ~/repo
+  environment:
+    JVM_OPTS: -Xmx3200m
+
+cache_save: &cache_save
+  save_cache:
+    paths:
+      - ~/.cache/coursier
+      - ~/.ivy2/cache
+      - ~/.m2
+      - ~/.sbt
+    key: v1-{{ checksum "build.sbt" }}
+
+cache_restore: &cache_restore
+  restore_cache:
+    keys:
+      - v1-{{ checksum "build.sbt" }}
+      - v1-
+
+jobs:
+  test:
+    <<: *docker_sbt
+    steps:
+      - checkout
+      - *cache_restore
+      - run:
+          name: Run tests
+          command: |
+            sbt test < /dev/null
+      - *cache_save
+
+workflows:
+  version: 2
+  scala-steward:
+    jobs:
+      - test
