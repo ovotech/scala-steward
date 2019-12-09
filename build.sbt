@@ -192,8 +192,9 @@ lazy val dockerSettings = Def.settings(
     ExecCmd("ENTRYPOINT", "/opt/docker/bin/scala-steward"),
     ExecCmd("CMD", "")
   ),
-  Docker / packageName := s"${gitHubOwner}/${name.value}",
-  dockerUpdateLatest := true
+  Docker / packageName := name.value,
+  dockerUpdateLatest := true,
+  dockerRepository := sys.env.get("AWS_ECR_URI")
 )
 
 lazy val noPublishSettings = Def.settings(

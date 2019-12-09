@@ -33,6 +33,15 @@ setup_git: &setup_git
       git config --global user.name "OVO Scala Steward"
       git config --global user.email "47038308+ovo-scala-steward@users.noreply.github.com"
 
+install_aws: &install_aws
+  run:
+    name: Install aws cli
+    command: |
+      PATH=$PATH:~/.local/bin && export PATH=$PATH
+      sudo apt-get update && sudo apt-get install -y python3-pip
+      pip3 install --user awscli jq psycopg2-binary botocore boto3
+      echo "export PATH=$PATH" >> $BASH_ENV
+
 jobs:
   test:
     <<: *docker_sbt
@@ -45,9 +54,29 @@ jobs:
           command: |
             sbt test < /dev/null
       - *cache_save
+  release:
+    <<: *docker_sbt
+    steps:
+      - checkout
+      - *cache_restore
+      - *setup_git
+      - *install_aws
+      - run:
+          name: Publish docker image
+          command: |
+            `aws ecr get-login --registry-ids $AWS_ACCOUNT_ID --no-include-email --region eu-west-1`
+            sbt docker:publish < /dev/null
 
 workflows:
   version: 2
   scala-steward:
     jobs:
       - test
+      - release:
+          requires:
+            - test
+          filters:
+            branches:
+              only:
+                - master
+                - publish-docker-image
