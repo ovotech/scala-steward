@@ -38,8 +38,8 @@ install_aws: &install_aws
     name: Install aws cli
     command: |
       PATH=$PATH:~/.local/bin && export PATH=$PATH
-      sudo apt-get update && sudo apt-get install -y python3-pip
-      pip3 install --user awscli jq psycopg2-binary botocore boto3
+      sudo apt-get update && sudo apt-get install -y jq python3-pip curl
+      pip3 install --user awscli
       echo "export PATH=$PATH" >> $BASH_ENV
 
 jobs:
