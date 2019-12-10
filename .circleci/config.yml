@@ -1,5 +1,8 @@
 version: 2.1
 
+orbs:
+  rotate-aws-keys: ovotech/aws-rotate-keys@1
+
 docker_sbt: &docker_sbt
   docker:
     - image: circleci/openjdk:8-jdk-stretch
@@ -67,6 +70,16 @@ jobs:
           command: |
             `aws ecr get-login --registry-ids $AWS_ACCOUNT_ID --no-include-email --region eu-west-1`
             sbt docker:publish < /dev/null
+  rotate-aws-keys:
+    docker:
+      - image: circleci/python:3-buster
+    steps:
+      - *install_aws
+      - rotate-aws-keys/rotate:
+          aws-username: "${AWS_USER}"
+          circleci-token: "${CIRCLECI_TOKEN}"
+          aws-access-key-id-var: "AWS_ACCESS_KEY_ID"
+          aws-secret-access-key-var: "AWS_SECRET_ACCESS_KEY"
 
 workflows:
   version: 2
@@ -78,6 +91,13 @@ workflows:
             - test
           filters:
             branches:
-              only:
-                - master
-                - publish-docker-image
+              only: master
+  rotate-keys:
+    triggers:
+      - schedule:
+          cron: "30 10 * * 1,4" # Every Monday and Thursday at 10:30
+          filters:
+            branches:
+              only: master
+    jobs:
+      - rotate-aws-keys
