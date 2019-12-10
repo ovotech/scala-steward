@@ -61,6 +61,7 @@ jobs:
       - *cache_restore
       - *setup_git
       - *install_aws
+      - setup_remote_docker
       - run:
           name: Publish docker image
           command: |
