@@ -19,7 +19,6 @@ package org.scalasteward.core.data
 import cats.implicits._
 import eu.timepit.refined.W
 import io.circe.{Decoder, Encoder}
-import monocle.Lens
 import org.scalasteward.core.data.Update.{Group, Single}
 import org.scalasteward.core.util
 import org.scalasteward.core.util.Nel
@@ -32,21 +31,13 @@ sealed trait Update extends Product with Serializable {
   def currentVersion: String
   def newerVersions: Nel[String]
 
-  def name: String =
+  final def name: String =
     Update.nameOf(groupId, artifactId)
 
-  def nextVersion: String =
+  final def nextVersion: String =
     newerVersions.head
 
-  def searchTerms: Nel[String] = {
-    val terms = this match {
-      case s: Single => s.artifactIds
-      case g: Group  => g.artifactIds.concat(g.artifactIdsPrefix.map(_.value).toList)
-    }
-    terms.map(Update.nameOf(groupId, _))
-  }
-
-  def show: String = {
+  final def show: String = {
     val artifacts = this match {
       case s: Single => s.artifactId + s.configurations.fold("")(":" + _)
       case g: Group  => g.artifactIds.mkString_("{", ", ", "}")
@@ -67,11 +58,6 @@ object Update {
   ) extends Update {
     override def artifactIds: Nel[String] =
       Nel.one(artifactId)
-  }
-
-  object Single {
-    val artifactIdLens: Lens[Update.Single, String] =
-      Lens[Update.Single, String](_.artifactId)(artifactId => _.copy(artifactId = artifactId))
   }
 
   final case class Group(
@@ -114,9 +100,6 @@ object Update {
 
   val commonSuffixes: List[String] =
     List("config", "contrib", "core", "extra", "server")
-
-  def removeCommonSuffix(str: String): String =
-    util.string.removeSuffix(str, commonSuffixes)
 
   def nameOf(groupId: GroupId, artifactId: String): String =
     if (commonSuffixes.contains(artifactId))

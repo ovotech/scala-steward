@@ -30,12 +30,12 @@ import org.scalasteward.core.persistence.JsonKeyValueStore
 import org.scalasteward.core.repocache.{RefreshErrorAlg, RepoCacheAlg, RepoCacheRepository}
 import org.scalasteward.core.repoconfig.RepoConfigAlg
 import org.scalasteward.core.sbt.SbtAlg
+import org.scalasteward.core.scalafix.MigrationAlg
 import org.scalasteward.core.scalafmt.ScalafmtAlg
-import org.scalasteward.core.update.{ExcludeAlg, FilterAlg, UpdateAlg, UpdateRepository}
+import org.scalasteward.core.update.{FilterAlg, PruningAlg, UpdateAlg, UpdateRepository}
 import org.scalasteward.core.util._
 import org.scalasteward.core.vcs.data.AuthenticatedUser
 import org.scalasteward.core.vcs.{VCSApiAlg, VCSExtraAlg, VCSRepoAlg, VCSSelection}
-import org.scalasteward.core.scalafix.MigrationAlg
 
 object Context {
   def create[F[_]: ConcurrentEffect: ContextShift: Timer](
@@ -68,6 +68,8 @@ object Context {
       implicit val pullRequestRepository: PullRequestRepository[F] =
         new PullRequestRepository[F](new JsonKeyValueStore("prs", "3"))
       implicit val scalafmtAlg: ScalafmtAlg[F] = ScalafmtAlg.create[F]
+      implicit val coursierAlg: CoursierAlg[F] = CoursierAlg.create
+      implicit val updateAlg: UpdateAlg[F] = new UpdateAlg[F]
       implicit val sbtAlg: SbtAlg[F] = SbtAlg.create[F]
       implicit val refreshErrorAlg: RefreshErrorAlg[F] =
         new RefreshErrorAlg[F](new JsonKeyValueStore("repos_refresh_errors", "1"))
@@ -76,11 +78,8 @@ object Context {
       implicit val editAlg: EditAlg[F] = new EditAlg[F]
       implicit val updateRepository: UpdateRepository[F] =
         new UpdateRepository[F](new JsonKeyValueStore("updates", "3"))
-      implicit val coursierAlg: CoursierAlg[F] = CoursierAlg.create
       implicit val nurtureAlg: NurtureAlg[F] = new NurtureAlg[F]
-      implicit val excludeAlg: ExcludeAlg[F] =
-        new ExcludeAlg[F](new JsonKeyValueStore("excluded", "1"))
-      implicit val updateAlg: UpdateAlg[F] = new UpdateAlg[F]
+      implicit val pruningAlg: PruningAlg[F] = new PruningAlg[F]
       new StewardAlg[F]
     }
 }

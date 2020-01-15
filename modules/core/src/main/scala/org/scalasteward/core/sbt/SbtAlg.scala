@@ -17,16 +17,17 @@
 package org.scalasteward.core.sbt
 
 import better.files.File
-import cats.Monad
+import cats.data.OptionT
 import cats.implicits._
+import cats.{Functor, Monad}
 import io.chrisdavenport.log4cats.Logger
 import org.scalasteward.core.application.Config
 import org.scalasteward.core.data.{Dependency, Update}
 import org.scalasteward.core.io.{FileAlg, FileData, ProcessAlg, WorkspaceAlg}
 import org.scalasteward.core.sbt.command._
-import org.scalasteward.core.sbt.data.{ArtificialProject, SbtVersion}
+import org.scalasteward.core.sbt.data.SbtVersion
 import org.scalasteward.core.scalafix.Migration
-import org.scalasteward.core.scalafmt.{scalafmtDependency, ScalafmtAlg}
+import org.scalasteward.core.scalafmt.ScalafmtAlg
 import org.scalasteward.core.update.UpdateAlg
 import org.scalasteward.core.util.Nel
 import org.scalasteward.core.vcs.data.Repo
@@ -42,11 +43,12 @@ trait SbtAlg[F[_]] {
 
   def getDependencies(repo: Repo): F[List[Dependency]]
 
-  def getUpdatesForProject(project: ArtificialProject): F[List[Update.Single]]
-
   def getUpdatesForRepo(repo: Repo): F[List[Update.Single]]
 
   def runMigrations(repo: Repo, migrations: Nel[Migration]): F[Unit]
+
+  final def getSbtDependency(repo: Repo)(implicit F: Functor[F]): F[Option[Dependency]] =
+    OptionT(getSbtVersion(repo)).subflatMap(sbtDependency).value
 }
 
 object SbtAlg {
@@ -56,8 +58,9 @@ object SbtAlg {
       fileAlg: FileAlg[F],
       logger: Logger[F],
       processAlg: ProcessAlg[F],
-      workspaceAlg: WorkspaceAlg[F],
       scalafmtAlg: ScalafmtAlg[F],
+      updateAlg: UpdateAlg[F],
+      workspaceAlg: WorkspaceAlg[F],
       F: Monad[F]
   ): SbtAlg[F] =
     new SbtAlg[F] {
@@ -92,40 +95,13 @@ object SbtAlg {
 
       override def getDependencies(repo: Repo): F[List[Dependency]] =
         for {
-          originalDependencies <- getOriginalDependencies(repo)
-          maybeSbtVersion <- getSbtVersion(repo)
-          maybeSbtDependency = maybeSbtVersion.flatMap(sbtDependency)
-          maybeScalafmtVersion <- scalafmtAlg.getScalafmtVersion(repo)
-          maybeScalafmtDependency = maybeScalafmtVersion.map(
-            scalafmtDependency(defaultScalaBinaryVersion)
-          )
-        } yield (maybeSbtDependency.toList ++ maybeScalafmtDependency.toList ++
-          originalDependencies).distinct
-
-      def getOriginalDependencies(repo: Repo): F[List[Dependency]] =
-        for {
           repoDir <- workspaceAlg.repoDir(repo)
           cmd = sbtCmd(List(stewardDependencies, reloadPlugins, stewardDependencies))
           lines <- exec(cmd, repoDir)
-        } yield parser.parseDependencies(lines)
-
-      override def getUpdatesForProject(project: ArtificialProject): F[List[Update.Single]] =
-        for {
-          updatesDir <- workspaceAlg.rootDir.map(_ / "updates")
-          projectDir = updatesDir / "project"
-          _ <- fileAlg.writeFileData(updatesDir, project.mkBuildSbt)
-          _ <- fileAlg.writeFileData(projectDir, project.mkBuildProperties)
-          _ <- fileAlg.writeFileData(projectDir, project.mkPluginsSbt)
-          cmd = sbtCmd(project.dependencyUpdatesCmd)
-          lines <- processAlg.exec(cmd, updatesDir)
-          _ <- fileAlg.deleteForce(updatesDir)
-          updatesWithCrossSuffix = parser.parseSingleUpdates(lines)
-          allDeps = project.libraries ++ project.plugins
-          uncross = allDeps.map(dep => dep.artifactIdCross -> dep.artifactId).toMap
-          updates = updatesWithCrossSuffix.flatMap { update =>
-            Update.Single.artifactIdLens.modifyF(uncross.get)(update).toList
-          }
-        } yield updates
+          dependencies = parser.parseDependencies(lines)
+          maybeSbtDependency <- getSbtDependency(repo)
+          maybeScalafmtDependency <- scalafmtAlg.getScalafmtDependency(repo)
+        } yield (maybeSbtDependency.toList ++ maybeScalafmtDependency.toList ++ dependencies).distinct
 
       override def getUpdatesForRepo(repo: Repo): F[List[Update.Single]] =
         for {
@@ -134,11 +110,12 @@ object SbtAlg {
             val stewardCommands = List(stewardDependencies, stewardUpdates)
             stewardCommands ++ List(reloadPlugins) ++ stewardCommands
           }
-          lines <- withTemporarySbtDependency(repo)(exec(sbtCmd(commands), repoDir))
+          lines <- exec(sbtCmd(commands), repoDir)
           (dependencies, updates) = parser.parseDependenciesAndUpdates(lines)
           upToDateDependencies = dependencies.diff(updates.map(_.dependency))
           updatesWithNewGroupId = upToDateDependencies.flatMap(UpdateAlg.findUpdateUnderNewGroup)
-          result = (updates.map(_.toUpdate) ++ updatesWithNewGroupId).distinct
+          additionalUpdates <- findAdditionalUpdates(repo)
+          result = (updates.map(_.toUpdate) ++ updatesWithNewGroupId ++ additionalUpdates).distinct
             .sortBy(update => (update.groupId, update.artifactId, update.currentVersion))
         } yield result
 
@@ -174,24 +151,12 @@ object SbtAlg {
           }
         }
 
-      def withTemporarySbtDependency[A](repo: Repo)(fa: F[A]): F[A] =
+      def findAdditionalUpdates(repo: Repo): F[List[Update.Single]] =
         for {
-          maybeSbtDep <- getSbtVersion(repo).map(_.flatMap(sbtDependency).map(_.formatAsModuleId))
-          maybeScalafmtDep <- scalafmtAlg
-            .getScalafmtVersion(repo)
-            .map(
-              _.map(scalafmtDependency(defaultScalaBinaryVersion))
-                .map(_.formatAsModuleIdScalaVersionAgnostic)
-            )
-          fakeDeps = Option(maybeSbtDep.toList ++ maybeScalafmtDep.toList).filter(_.nonEmpty)
-          a <- fakeDeps.fold(fa) { dependencies =>
-            workspaceAlg.repoDir(repo).flatMap { repoDir =>
-              val content = dependencies
-                .map(dep => s"libraryDependencies += ${dep}")
-                .mkString(System.lineSeparator())
-              fileAlg.createTemporarily(repoDir / "project" / "tmp-sbt-dep.sbt", content)(fa)
-            }
-          }
-        } yield a
+          maybeSbtDependency <- getSbtDependency(repo)
+          maybeScalafmtDependency <- scalafmtAlg.getScalafmtDependency(repo)
+          maybeSbtUpdate <- maybeSbtDependency.flatTraverse(updateAlg.findUpdate)
+          maybeScalafmtUpdate <- maybeScalafmtDependency.flatTraverse(updateAlg.findUpdate)
+        } yield maybeSbtUpdate.toList ++ maybeScalafmtUpdate.toList
     }
 }
