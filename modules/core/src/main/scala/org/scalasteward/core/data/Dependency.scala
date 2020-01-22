@@ -30,11 +30,9 @@ final case class Dependency(
     scalaVersion: Option[ScalaVersion] = None,
     configurations: Option[String] = None
 ) {
-  def formatAsModuleId: String =
-    s""""$groupId" % "$artifactIdCross" % "$version""""
-
-  def formatAsModuleIdScalaVersionAgnostic: String =
-    s""""$groupId" %% "$artifactId" % "$version""""
+  def attributes: Map[String, String] =
+    sbtVersion.map("sbtVersion" -> _.value).toMap ++
+      scalaVersion.map("scalaVersion" -> _.value).toMap
 
   def toUpdate: Update.Single =
     Update.Single(groupId, artifactId, version, Nel.of(version), configurations)

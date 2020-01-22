@@ -74,11 +74,10 @@ object UpdateHeuristic {
     }
 
     def mkRegex(update: Update): Option[Regex] =
-      searchTermsToAlternation(getSearchTerms(update).map(Update.removeCommonSuffix)).map {
-        searchTerms =>
-          val prefix = getPrefixRegex(update).getOrElse("")
-          val currentVersion = Regex.quote(update.currentVersion)
-          s"(?i)(.*)($prefix$searchTerms.*?)$currentVersion(.?)".r
+      searchTermsToAlternation(getSearchTerms(update).map(removeCommonSuffix)).map { searchTerms =>
+        val prefix = getPrefixRegex(update).getOrElse("")
+        val currentVersion = Regex.quote(update.currentVersion)
+        s"(?i)(.*)($prefix$searchTerms.*?)$currentVersion(.?)".r
       }
 
     def replaceF(update: Update): String => Option[String] =
@@ -103,6 +102,17 @@ object UpdateHeuristic {
 
     replaceF
   }
+
+  private def searchTerms(update: Update): List[String] = {
+    val terms = update match {
+      case s: Update.Single => s.artifactIds
+      case g: Update.Group  => g.artifactIds.concat(g.artifactIdsPrefix.map(_.value).toList)
+    }
+    terms.map(Update.nameOf(update.groupId, _)).toList
+  }
+
+  private def removeCommonSuffix(str: String): String =
+    util.string.removeSuffix(str, Update.commonSuffixes)
 
   val moduleId = UpdateHeuristic(
     name = "moduleId",
@@ -135,13 +145,12 @@ object UpdateHeuristic {
 
   val strict = UpdateHeuristic(
     name = "strict",
-    replaceVersion =
-      defaultReplaceVersion(_.searchTerms.toList, update => Some(s"${update.groupId}.*?"))
+    replaceVersion = defaultReplaceVersion(searchTerms, update => Some(s"${update.groupId}.*?"))
   )
 
   val original = UpdateHeuristic(
     name = "original",
-    replaceVersion = defaultReplaceVersion(_.searchTerms.toList)
+    replaceVersion = defaultReplaceVersion(searchTerms)
   )
 
   val relaxed = UpdateHeuristic(

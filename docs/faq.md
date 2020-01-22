@@ -30,3 +30,9 @@ number adheres to [Semantic Versioning](https://semver.org/)) as demonstrated
 
 Other examples of Mergify rules for Scala Steward can be found via
 [GitHub's code search](https://github.com/search?p=6&q=%22author%3Dscala-steward%22+filename%3A.mergify.yml&type=Code).
+
+## Where can Scala Steward's PGP key be found?
+
+Scala Steward signs commits with a PGP key. The fingerprint of that key is
+774C3674392662AE645C9B8396BDF10FFAB8B6A6 and it can be found at
+https://keys.openpgp.org/search?q=me@scala-steward.org.

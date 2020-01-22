@@ -16,144 +16,31 @@
 
 package org.scalasteward.core.update
 
+import cats.Monad
 import cats.implicits._
 import io.chrisdavenport.log4cats.Logger
+import org.scalasteward.core.coursier.CoursierAlg
 import org.scalasteward.core.data.{Dependency, GroupId, Update}
-import org.scalasteward.core.nurture.PullRequestRepository
-import org.scalasteward.core.repocache.{RepoCache, RepoCacheRepository}
-import org.scalasteward.core.sbt._
-import org.scalasteward.core.sbt.data.ArtificialProject
-import org.scalasteward.core.update.data.UpdateState
-import org.scalasteward.core.update.data.UpdateState._
-import org.scalasteward.core.util.MonadThrowable
-import org.scalasteward.core.vcs.data.PullRequestState.Closed
-import org.scalasteward.core.vcs.data.Repo
 import org.scalasteward.core.util
+import org.scalasteward.core.util.Nel
 
 final class UpdateAlg[F[_]](
     implicit
-    excludeAlg: ExcludeAlg[F],
+    coursierAlg: CoursierAlg[F],
     filterAlg: FilterAlg[F],
     logger: Logger[F],
-    pullRequestRepo: PullRequestRepository[F],
-    repoCacheRepository: RepoCacheRepository[F],
-    sbtAlg: SbtAlg[F],
-    updateRepository: UpdateRepository[F],
-    F: MonadThrowable[F]
+    F: Monad[F]
 ) {
-  // WIP
-  def checkForUpdates(repos: List[Repo]): F[List[Update.Single]] = {
-    val getDependencies =
-      repoCacheRepository.getDependencies(repos).flatMap(excludeAlg.removeExcluded)
-    updateRepository.deleteAll >>
-      getDependencies.flatMap { dependencies =>
-        val (libraries, plugins) = dependencies
-          .filter { d =>
-            FilterAlg.isIgnoredGlobally(d.toUpdate).isRight
-          }
-          .partition(_.sbtVersion.isEmpty)
-        val libProjects = splitter
-          .xxx(libraries)
-          .map { libs =>
-            ArtificialProject(
-              defaultScalaVersion,
-              defaultSbtVersion,
-              libs.sortBy(_.formatAsModuleId),
-              List.empty
-            )
-          }
-
-        val pluginProjects = plugins
-          .groupBy(_.sbtVersion)
-          .flatMap {
-            case (maybeSbtVersion, plugins1) =>
-              splitter.xxx(plugins1).map { ps =>
-                ArtificialProject(
-                  defaultScalaVersion,
-                  seriesToSpecificVersion(maybeSbtVersion.get),
-                  List.empty,
-                  ps.sortBy(_.formatAsModuleId)
-                )
-              }
-          }
-          .toList
-
-        val x = (libProjects ++ pluginProjects).flatTraverse { prj =>
-          val fa =
-            util.divideOnError(prj)(sbtAlg.getUpdatesForProject)(_.halve.toList.flatMap {
-              case (p1, p2) => List(p1, p2)
-            }) { (failedP: ArtificialProject, t: Throwable) =>
-              for {
-                _ <- logger.error(t)(s"failed finding updates for $failedP")
-                _ <- excludeAlg.excludeTemporarily(failedP.libraries ++ failedP.plugins)
-              } yield List.empty[Update.Single]
-            }
-
-          fa.flatTap { updates =>
-            logger.info(util.logger.showUpdates(updates.widen[Update])) >>
-              updateRepository.saveMany(updates)
-          }
-        }
-
-        x.flatMap(updates => filterAlg.globalFilterMany(updates))
-      }
-  }
-
-  def filterByApplicableUpdates(repos: List[Repo], updates: List[Update.Single]): F[List[Repo]] =
-    repos.filterA(needsAttention(_, updates))
-
-  def needsAttention(repo: Repo, updates: List[Update.Single]): F[Boolean] =
+  def findUpdate(dependency: Dependency): F[Option[Update.Single]] =
     for {
-      allStates <- findAllUpdateStates(repo, updates)
-      outdatedStates = allStates.filter {
-        case DependencyOutdated(_, _)     => true
-        case PullRequestOutdated(_, _, _) => true
-        case _                            => false
+      newerVersions0 <- coursierAlg.getNewerVersions(dependency)
+      maybeUpdate0 = Nel.fromList(newerVersions0).map { newerVersions1 =>
+        dependency.toUpdate.copy(newerVersions = newerVersions1.map(_.value))
       }
-      isOutdated = outdatedStates.nonEmpty
-      _ <- {
-        if (isOutdated) {
-          val statesAsString = util.string.indentLines(outdatedStates.map(_.toString).sorted)
-          logger.info(s"Update states for ${repo.show}:\n" + statesAsString)
-        } else F.unit
-      }
-    } yield isOutdated
-
-  def findAllUpdateStates(repo: Repo, updates: List[Update.Single]): F[List[UpdateState]] =
-    repoCacheRepository.findCache(repo).flatMap {
-      case Some(repoCache) =>
-        val dependencies = repoCache.dependencies
-        dependencies.traverse { dependency =>
-          findUpdateState(repo, repoCache, dependency, updates)
-        }
-      case None => List.empty[UpdateState].pure[F]
-    }
-
-  def findUpdateState(
-      repo: Repo,
-      repoCache: RepoCache,
-      dependency: Dependency,
-      updates: List[Update.Single]
-  ): F[UpdateState] =
-    updates.find(UpdateAlg.isUpdateFor(_, dependency)) match {
-      case None => F.pure(DependencyUpToDate(dependency))
-      case Some(update) =>
-        repoCache.maybeRepoConfig.map(_.updates.keep(update)) match {
-          case Some(Left(reason)) =>
-            F.pure(UpdateRejectedByConfig(dependency, reason))
-          case _ =>
-            pullRequestRepo.findPullRequest(repo, dependency, update.nextVersion).map {
-              case None =>
-                DependencyOutdated(dependency, update)
-              case Some((uri, _, state)) if state === Closed =>
-                PullRequestClosed(dependency, update, uri)
-              case Some((uri, baseSha1, _)) if baseSha1 === repoCache.sha1 =>
-                PullRequestUpToDate(dependency, update, uri)
-              case Some((uri, _, _)) =>
-                PullRequestOutdated(dependency, update, uri)
-            }
-        }
-    }
+      maybeUpdate1 <- maybeUpdate0.flatTraverse(filterAlg.globalFilterOne)
+      maybeUpdate2 = maybeUpdate1.orElse(UpdateAlg.findUpdateUnderNewGroup(dependency))
+      _ <- maybeUpdate2.fold(F.unit)(update => logger.info(s"Found update: ${update.show}"))
+    } yield maybeUpdate2
 }
 
 object UpdateAlg {

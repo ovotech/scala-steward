@@ -31,6 +31,35 @@ class SbtAlgTest extends AnyFunSuite with Matchers {
     )
   }
 
+  test("getDependencies") {
+    val repo = Repo("typelevel", "cats")
+    val repoDir = config.workspace / repo.show
+    val files = Map(
+      repoDir / "project" / "build.properties" -> "sbt.version=1.2.6",
+      repoDir / ".scalafmt.conf" -> "version=2.0.0"
+    )
+    val state =
+      sbtAlg.getDependencies(repo).runS(MockState.empty.copy(files = files)).unsafeRunSync()
+    state shouldBe MockState.empty.copy(
+      commands = Vector(
+        List(
+          "TEST_VAR=GREAT",
+          "ANOTHER_TEST_VAR=ALSO_GREAT",
+          repoDir.toString,
+          "firejail",
+          s"--whitelist=$repoDir",
+          "sbt",
+          "-batch",
+          "-no-colors",
+          s";$stewardDependencies;$reloadPlugins;$stewardDependencies"
+        ),
+        List("read", s"$repoDir/project/build.properties"),
+        List("read", s"$repoDir/.scalafmt.conf")
+      ),
+      files = files
+    )
+  }
+
   test("getUpdatesForRepo") {
     val repo = Repo("fthomas", "refined")
     val repoDir = config.workspace / "fthomas/refined"
@@ -38,32 +67,29 @@ class SbtAlgTest extends AnyFunSuite with Matchers {
       repoDir / "project" / "build.properties" -> "sbt.version=1.2.6",
       repoDir / ".scalafmt.conf" -> "version=2.0.0"
     )
-
-    files.foreach {
-      case (file, content) =>
-        val initialState = MockState.empty.copy(files = Map(file -> content))
-        val state = sbtAlg.getUpdatesForRepo(repo).runS(initialState).unsafeRunSync()
-        state shouldBe MockState.empty.copy(
-          files = Map(file -> content),
-          commands = Vector(
-            List("read", s"$repoDir/project/build.properties"),
-            List("read", s"$repoDir/.scalafmt.conf"),
-            List("create", s"$repoDir/project/tmp-sbt-dep.sbt"),
-            List(
-              "TEST_VAR=GREAT",
-              "ANOTHER_TEST_VAR=ALSO_GREAT",
-              repoDir.toString,
-              "firejail",
-              s"--whitelist=$repoDir",
-              "sbt",
-              "-batch",
-              "-no-colors",
-              s";$stewardDependencies;$stewardUpdates;$reloadPlugins;$stewardDependencies;$stewardUpdates"
-            ),
-            List("rm", s"$repoDir/project/tmp-sbt-dep.sbt")
-          )
-        )
-    }
+    val initialState = MockState.empty.copy(files = files)
+    val state = sbtAlg.getUpdatesForRepo(repo).runS(initialState).unsafeRunSync()
+    state shouldBe initialState.copy(
+      commands = Vector(
+        List(
+          "TEST_VAR=GREAT",
+          "ANOTHER_TEST_VAR=ALSO_GREAT",
+          repoDir.toString,
+          "firejail",
+          s"--whitelist=$repoDir",
+          "sbt",
+          "-batch",
+          "-no-colors",
+          s";$stewardDependencies;$stewardUpdates;$reloadPlugins;$stewardDependencies;$stewardUpdates"
+        ),
+        List("read", s"$repoDir/project/build.properties"),
+        List("read", s"$repoDir/.scalafmt.conf")
+      ),
+      logs = Vector(
+        (None, "Found update: org.scala-sbt:sbt : 1.2.6 -> 1.2.8"),
+        (None, "Found update: org.scalameta:scalafmt-core : 2.0.0 -> 2.0.1")
+      )
+    )
   }
 
   test("getUpdatesForRepo ignoring .jvmopts and .sbtopts files") {
@@ -76,8 +102,6 @@ class SbtAlgTest extends AnyFunSuite with Matchers {
 
     state shouldBe MockState.empty.copy(
       commands = Vector(
-        List("read", s"$repoDir/project/build.properties"),
-        List("read", s"$repoDir/.scalafmt.conf"),
         List("rm", (repoDir / ".jvmopts").toString),
         List("rm", (repoDir / ".sbtopts").toString),
         List(
@@ -92,7 +116,9 @@ class SbtAlgTest extends AnyFunSuite with Matchers {
           s";$stewardDependencies;$stewardUpdates;$reloadPlugins;$stewardDependencies;$stewardUpdates"
         ),
         List("restore", (repoDir / ".sbtopts").toString),
-        List("restore", (repoDir / ".jvmopts").toString)
+        List("restore", (repoDir / ".jvmopts").toString),
+        List("read", s"$repoDir/project/build.properties"),
+        List("read", s"$repoDir/.scalafmt.conf")
       )
     )
   }
