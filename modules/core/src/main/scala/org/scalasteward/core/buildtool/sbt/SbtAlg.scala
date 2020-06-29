@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package org.scalasteward.core.sbt
+package org.scalasteward.core.buildtool.sbt
 
 import better.files.File
 import cats.data.OptionT
@@ -22,53 +22,38 @@ import cats.implicits._
 import cats.{Functor, Monad}
 import io.chrisdavenport.log4cats.Logger
 import org.scalasteward.core.application.Config
-import org.scalasteward.core.data.{Dependency, Update}
+import org.scalasteward.core.buildtool.BuildToolAlg
+import org.scalasteward.core.buildtool.sbt.command._
+import org.scalasteward.core.buildtool.sbt.data.SbtVersion
+import org.scalasteward.core.data.{Dependency, Resolver, Scope}
 import org.scalasteward.core.io.{FileAlg, FileData, ProcessAlg, WorkspaceAlg}
-import org.scalasteward.core.sbt.command._
-import org.scalasteward.core.sbt.data.SbtVersion
 import org.scalasteward.core.scalafix.Migration
 import org.scalasteward.core.scalafmt.ScalafmtAlg
-import org.scalasteward.core.update.UpdateAlg
 import org.scalasteward.core.util.Nel
 import org.scalasteward.core.vcs.data.Repo
 
-trait SbtAlg[F[_]] {
-  def addGlobalPlugin(plugin: FileData): F[Unit]
-
+trait SbtAlg[F[_]] extends BuildToolAlg[F] {
   def addGlobalPluginTemporarily[A](plugin: FileData)(fa: F[A]): F[A]
 
-  def addGlobalPlugins: F[Unit]
+  def addGlobalPlugins[A](fa: F[A]): F[A]
 
   def getSbtVersion(repo: Repo): F[Option[SbtVersion]]
-
-  def getDependencies(repo: Repo): F[List[Dependency]]
-
-  def getUpdatesForRepo(repo: Repo): F[List[Update.Single]]
-
-  def runMigrations(repo: Repo, migrations: Nel[Migration]): F[Unit]
 
   final def getSbtDependency(repo: Repo)(implicit F: Functor[F]): F[Option[Dependency]] =
     OptionT(getSbtVersion(repo)).subflatMap(sbtDependency).value
 }
 
 object SbtAlg {
-  def create[F[_]](
-      implicit
+  def create[F[_]](implicit
       config: Config,
       fileAlg: FileAlg[F],
       logger: Logger[F],
       processAlg: ProcessAlg[F],
       scalafmtAlg: ScalafmtAlg[F],
-      updateAlg: UpdateAlg[F],
       workspaceAlg: WorkspaceAlg[F],
       F: Monad[F]
   ): SbtAlg[F] =
     new SbtAlg[F] {
-      override def addGlobalPlugin(plugin: FileData): F[Unit] =
-        List("0.13", "1.0").traverse_ { series =>
-          sbtDir.flatMap(dir => fileAlg.writeFileData(dir / series / "plugins", plugin))
-        }
-
       override def addGlobalPluginTemporarily[A](plugin: FileData)(fa: F[A]): F[A] =
         sbtDir.flatMap { dir =>
           val plugins = "plugins"
@@ -79,12 +64,12 @@ object SbtAlg {
           }
         }
 
-      override def addGlobalPlugins: F[Unit] =
-        for {
-          _ <- logger.info("Add global sbt plugins")
-          _ <- addGlobalPlugin(scalaStewardSbt)
-          _ <- addGlobalPlugin(stewardPlugin)
-        } yield ()
+      override def addGlobalPlugins[A](fa: F[A]): F[A] =
+        logger.info("Add global sbt plugins") >>
+          stewardPlugin.flatMap(addGlobalPluginTemporarily(_)(fa))
+
+      override def containsBuild(repo: Repo): F[Boolean] =
+        workspaceAlg.repoDir(repo).flatMap(repoDir => fileAlg.isRegularFile(repoDir / "build.sbt"))
 
       override def getSbtVersion(repo: Repo): F[Option[SbtVersion]] =
         for {
@@ -93,30 +78,20 @@ object SbtAlg {
           version = maybeProperties.flatMap(parser.parseBuildProperties)
         } yield version
 
-      override def getDependencies(repo: Repo): F[List[Dependency]] =
+      override def getDependencies(repo: Repo): F[List[Scope.Dependencies]] =
         for {
           repoDir <- workspaceAlg.repoDir(repo)
-          cmd = sbtCmd(List(stewardDependencies, reloadPlugins, stewardDependencies))
-          lines <- exec(cmd, repoDir)
-          dependencies = parser.parseDependencies(lines)
-          maybeSbtDependency <- getSbtDependency(repo)
-          maybeScalafmtDependency <- scalafmtAlg.getScalafmtDependency(repo)
-        } yield (maybeSbtDependency.toList ++ maybeScalafmtDependency.toList ++ dependencies).distinct
-
-      override def getUpdatesForRepo(repo: Repo): F[List[Update.Single]] =
-        for {
-          repoDir <- workspaceAlg.repoDir(repo)
-          commands = {
-            val stewardCommands = List(stewardDependencies, stewardUpdates)
-            stewardCommands ++ List(reloadPlugins) ++ stewardCommands
-          }
+          commands = List(setOffline, crossStewardDependencies, reloadPlugins, stewardDependencies)
           lines <- exec(sbtCmd(commands), repoDir)
-          (dependencies, updates) = parser.parseDependenciesAndUpdates(lines)
-          upToDateDependencies = dependencies.diff(updates.map(_.dependency))
-          updatesWithNewGroupId = upToDateDependencies.flatMap(UpdateAlg.findUpdateUnderNewGroup)
-          additionalUpdates <- findAdditionalUpdates(repo)
-          result = (updates.map(_.toUpdate) ++ updatesWithNewGroupId ++ additionalUpdates).distinct
-            .sortBy(update => (update.groupId, update.artifactId, update.currentVersion))
+          dependencies = parser.parseDependencies(lines)
+          additionalDependencies <- getAdditionalDependencies(repo)
+          // combine scopes with the same resolvers
+          result =
+            (dependencies ++ additionalDependencies)
+              .groupByNel(_.resolvers)
+              .values
+              .toList
+              .map(group => group.head.as(group.reduceMap(_.value).distinct.sorted))
         } yield result
 
       override def runMigrations(repo: Repo, migrations: Nel[Migration]): F[Unit] =
@@ -151,12 +126,13 @@ object SbtAlg {
           }
         }
 
-      def findAdditionalUpdates(repo: Repo): F[List[Update.Single]] =
+      def getAdditionalDependencies(repo: Repo): F[List[Scope.Dependencies]] =
         for {
           maybeSbtDependency <- getSbtDependency(repo)
           maybeScalafmtDependency <- scalafmtAlg.getScalafmtDependency(repo)
-          maybeSbtUpdate <- maybeSbtDependency.flatTraverse(updateAlg.findUpdate)
-          maybeScalafmtUpdate <- maybeScalafmtDependency.flatTraverse(updateAlg.findUpdate)
-        } yield maybeSbtUpdate.toList ++ maybeScalafmtUpdate.toList
+        } yield Nel
+          .fromList(maybeSbtDependency.toList ++ maybeScalafmtDependency.toList)
+          .map(dependencies => Scope(dependencies.toList, List(Resolver.mavenCentral)))
+          .toList
     }
 }

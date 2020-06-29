@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,19 +22,17 @@ import com.github.benmanes.caffeine.cache.Caffeine
 import io.chrisdavenport.log4cats.Logger
 import org.http4s.client.Client
 import org.http4s.{Method, Request, Status, Uri}
+import org.scalasteward.core.application.Config
 import scalacache.CatsEffect.modes._
 import scalacache.caffeine.CaffeineCache
 import scalacache.{Async => _, _}
 
-final class HttpExistenceClient[F[_]](statusCache: Cache[Status])(
-    implicit
+final class HttpExistenceClient[F[_]](statusCache: Cache[Status])(implicit
     client: Client[F],
     logger: Logger[F],
     mode: Mode[F],
     F: MonadThrowable[F]
 ) {
-  def exists(uri: String): F[Boolean] = F.fromEither(Uri.fromString(uri)).flatMap(exists)
-
   def exists(uri: Uri): F[Boolean] =
     status(uri).map(_ === Status.Ok).handleErrorWith { throwable =>
       logger.debug(throwable)(s"Failed to check if $uri exists").as(false)
@@ -47,14 +45,20 @@ final class HttpExistenceClient[F[_]](statusCache: Cache[Status])(
 }
 
 object HttpExistenceClient {
-  def create[F[_]](
-      implicit
+  def create[F[_]](implicit
+      config: Config,
       client: Client[F],
       logger: Logger[F],
       F: Async[F]
   ): Resource[F, HttpExistenceClient[F]] = {
     val buildCache = F.delay {
-      CaffeineCache(Caffeine.newBuilder().maximumSize(16384L).build[String, Entry[Status]]())
+      CaffeineCache(
+        Caffeine
+          .newBuilder()
+          .maximumSize(16384L)
+          .expireAfterWrite(config.cacheTtl.length, config.cacheTtl.unit)
+          .build[String, Entry[Status]]()
+      )
     }
     Resource.make(buildCache)(_.close().void).map(new HttpExistenceClient[F](_))
   }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,35 +16,24 @@
 
 package org.scalasteward.core.bitbucketserver.http4s
 
-import cats.data.NonEmptyList
 import cats.effect.Sync
 import cats.implicits._
-import io.circe.{Decoder, Encoder}
-import io.circe.generic.semiauto.{deriveDecoder, deriveEncoder}
 import org.http4s.{Request, Uri}
+import org.scalasteward.core.bitbucketserver.http4s.Json.{Reviewer, User}
 import org.scalasteward.core.git.Branch
 import org.scalasteward.core.util.HttpJsonClient
 import org.scalasteward.core.vcs.VCSApiAlg
 import org.scalasteward.core.vcs.data.PullRequestState.Open
-import org.scalasteward.core.vcs.data.{
-  AuthenticatedUser,
-  BranchOut,
-  NewPullRequestData,
-  PullRequestOut,
-  PullRequestState,
-  Repo,
-  RepoOut,
-  UserOut
-}
+import org.scalasteward.core.vcs.data._
 
 /**
   * https://docs.atlassian.com/bitbucket-server/rest/6.6.1/bitbucket-rest.html
   */
-class Http4sBitbucketServerApiAlg[F[_]: Sync](
+class Http4sBitbucketServerApiAlg[F[_]](
     bitbucketApiHost: Uri,
-    user: AuthenticatedUser,
-    modify: Repo => Request[F] => F[Request[F]]
-)(implicit client: HttpJsonClient[F])
+    modify: Repo => Request[F] => F[Request[F]],
+    useReviewers: Boolean
+)(implicit client: HttpJsonClient[F], F: Sync[F])
     extends VCSApiAlg[F] {
   val url = new StashUrls(bitbucketApiHost)
 
@@ -56,8 +45,9 @@ class Http4sBitbucketServerApiAlg[F[_]: Sync](
     val toRef =
       Json.Ref("refs/heads/" + data.base.name, Json.Repository(repo.repo, Json.Project(repo.owner)))
 
-    val req =
-      Json.NewPR(
+    for {
+      reviewers <- useDefaultReviewers(repo)
+      req = Json.NewPR(
         title = data.title,
         description = data.body,
         state = Open,
@@ -66,22 +56,38 @@ class Http4sBitbucketServerApiAlg[F[_]: Sync](
         fromRef = fromRef,
         toRef = toRef,
         locked = false,
-        reviewers = List.empty
+        reviewers = reviewers
       )
-
-    client
-      .postWithBody[Json.PR, Json.NewPR](url.pullRequests(repo), req, modify(repo))
-      .map(pr => PullRequestOut(pr.links("self").head.href, pr.state, pr.title))
+      pr <- client.postWithBody[Json.PR, Json.NewPR](url.pullRequests(repo), req, modify(repo))
+    } yield PullRequestOut(pr.links("self").head.href, pr.state, pr.title)
   }
 
+  private def useDefaultReviewers(repo: Repo): F[List[Reviewer]] =
+    if (useReviewers) getDefaultReviewers(repo) else F.pure(List[Reviewer]())
+
+  def getDefaultReviewers(repo: Repo): F[List[Reviewer]] =
+    client
+      .get[List[Json.Condition]](url.reviewers(repo), modify(repo))
+      .map(conditions =>
+        conditions
+          .flatMap(condition =>
+            condition.reviewers
+              .map(reviewer => Reviewer(User(reviewer.name)))
+          )
+      )
+
   override def getBranch(repo: Repo, branch: Branch): F[BranchOut] =
-    ni(s"createBranch($repo,$branch)")
+    client
+      .get[Json.Branches](url.listBranch(repo, branch), modify(repo))
+      .map((a: Json.Branches) =>
+        BranchOut(Branch(a.values.head.id), CommitOut(a.values.head.latestCommit))
+      )
 
   override def getRepo(repo: Repo): F[RepoOut] =
     for {
       r <- client.get[Json.Repo](url.repo(repo), modify(repo))
       cloneUri = r.links("clone").find(_.name.contains("http")).get.href
-    } yield RepoOut(r.name, UserOut(user.login), None, cloneUri, Branch("master"))
+    } yield RepoOut(r.name, UserOut(repo.owner), None, cloneUri, Branch("master"))
 
   override def listPullRequests(repo: Repo, head: String, base: Branch): F[List[PullRequestOut]] =
     client
@@ -90,66 +96,28 @@ class Http4sBitbucketServerApiAlg[F[_]: Sync](
 
   def ni(name: String): Nothing = throw new NotImplementedError(name)
 
-  object Json {
-    case class Page[A](values: List[A])
-
-    case class Repo(name: String, forkable: Boolean, project: Project, links: Links)
-
-    case class Project(key: String)
-
-    type Links = Map[String, NonEmptyList[Link]]
-
-    case class Link(href: Uri, name: Option[String])
-
-    case class PR(title: String, state: PullRequestState, links: Links)
-
-    case class NewPR(
-        title: String,
-        description: String,
-        state: PullRequestState,
-        open: Boolean,
-        closed: Boolean,
-        fromRef: Ref,
-        toRef: Ref,
-        locked: Boolean,
-        reviewers: List[Reviewer]
-    )
-
-    case class Ref(id: String, repository: Repository)
-
-    case class Repository(slug: String, project: Project)
-
-    case class Reviewer(user: User)
-
-    case class User(name: String)
-
-    implicit def pageDecode[A: Decoder]: Decoder[Page[A]] = deriveDecoder
-    implicit val repoDecode: Decoder[Repo] = deriveDecoder
-    implicit val projectDecode: Decoder[Project] = deriveDecoder
-    implicit val linkDecoder: Decoder[Link] = deriveDecoder
-    implicit val uriDecoder: Decoder[Uri] = Decoder.decodeString.map(Uri.unsafeFromString)
-    implicit val prDecoder: Decoder[PR] = deriveDecoder
-
-    implicit val encodeNewPR: Encoder[NewPR] = deriveEncoder
-    implicit val encodeRef: Encoder[Ref] = deriveEncoder
-    implicit val encodeRepository: Encoder[Repository] = deriveEncoder
-    implicit val encodeProject: Encoder[Project] = deriveEncoder
-    implicit val encodeReviewer: Encoder[Reviewer] = deriveEncoder
-    implicit val encodeUser: Encoder[User] = deriveEncoder
-  }
 }
 
 final class StashUrls(base: Uri) {
   val api: Uri = base / "rest" / "api" / "1.0"
+  val reviewerApi: Uri = base / "rest" / "default-reviewers" / "1.0"
 
   def repo(repo: Repo): Uri =
     api / "projects" / repo.owner / "repos" / repo.repo
 
   def pullRequests(r: Repo): Uri = repo(r) / "pull-requests"
 
+  def reviewers(repo: Repo): Uri =
+    reviewerApi / "projects" / repo.owner / "repos" / repo.repo / "conditions"
+
   def listPullRequests(r: Repo, head: String): Uri =
     pullRequests(r)
       .withQueryParam("at", head)
       .withQueryParam("limit", "1000")
       .withQueryParam("direction", "outgoing")
+
+  def branches(r: Repo): Uri = repo(r) / "branches"
+
+  def listBranch(r: Repo, branch: Branch): Uri =
+    branches(r).withQueryParam("filterText", branch.name)
 }

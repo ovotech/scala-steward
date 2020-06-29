@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,8 +21,7 @@ import io.chrisdavenport.log4cats.Logger
 import org.http4s.Uri
 import org.scalasteward.core.util.{HttpExistenceClient, MonadThrowable}
 
-final class SelfCheckAlg[F[_]](
-    implicit
+final class SelfCheckAlg[F[_]](implicit
     httpExistenceClient: HttpExistenceClient[F],
     logger: Logger[F],
     F: MonadThrowable[F]

@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -42,15 +42,19 @@ object UpdateHeuristic {
 
   private def replaceGroupF(update: Update): String => Option[String] = { target =>
     update match {
-      case Update.Single(groupId, artifactId, _, _, _, Some(newerGroupId)) =>
-        val currentGroupId = Regex.quote(groupId.value)
-        val currentArtifactId = Regex.quote(artifactId)
+      case s @ Update.Single(_, _, Some(newerGroupId)) =>
+        val currentGroupId = Regex.quote(s.groupId.value)
+        val currentArtifactId = Regex.quote(s.artifactId.name)
         val regex = s"""(?i)(.*)${currentGroupId}(.*${currentArtifactId})""".r
-        replaceSomeInAllowedParts(regex, target, match0 => {
-          val group1 = match0.group(1)
-          val group2 = match0.group(2)
-          Some(s"""$group1$newerGroupId$group2""")
-        }).someIfChanged
+        replaceSomeInAllowedParts(
+          regex,
+          target,
+          match0 => {
+            val group1 = match0.group(1)
+            val group2 = match0.group(2)
+            Some(s"""$group1$newerGroupId$group2""")
+          }
+        ).someIfChanged
       case _ => Some(target)
     }
   }
@@ -105,8 +109,9 @@ object UpdateHeuristic {
 
   private def searchTerms(update: Update): List[String] = {
     val terms = update match {
-      case s: Update.Single => s.artifactIds
-      case g: Update.Group  => g.artifactIds.concat(g.artifactIdsPrefix.map(_.value).toList)
+      case s: Update.Single => Nel.one(s.artifactId.name)
+      case g: Update.Group =>
+        g.artifactIds.map(_.name).concat(g.artifactIdsPrefix.map(_.value).toList)
     }
     terms.map(Update.nameOf(update.groupId, _)).toList
   }
@@ -117,30 +122,32 @@ object UpdateHeuristic {
   val moduleId = UpdateHeuristic(
     name = "moduleId",
     replaceVersion = update =>
-      target => {
-        val groupId = Regex.quote(update.groupId.value)
-        val artifactIds = alternation(update.artifactIds.map(Regex.quote))
-        val currentVersion = Regex.quote(update.currentVersion)
-        val regex =
-          raw"""(.*)(["|`]$groupId(?:"\s*%+\s*"|:+)$artifactIds(?:"\s*%\s*|:+))("?)($currentVersion)("|`)""".r
-        replaceSomeInAllowedParts(
-          regex,
-          target,
-          match0 => {
-            val precedingCharacters = match0.group(1)
-            val dependency = match0.group(2)
-            val versionPrefix = match0.group(4)
-            val versionSuffix = match0.group(6)
-            if (shouldBeIgnored(precedingCharacters)) None
-            else
-              Some(
-                Regex.quoteReplacement(
-                  s"""$precedingCharacters$dependency$versionPrefix${update.nextVersion}$versionSuffix"""
+      target =>
+        {
+          val groupId = Regex.quote(update.groupId.value)
+          val artifactIds =
+            alternation(update.artifactIds.map(artifactId => Regex.quote(artifactId.name)))
+          val currentVersion = Regex.quote(update.currentVersion)
+          val regex =
+            raw"""(.*)(["|`]$groupId(?:"\s*%+\s*"|:+)$artifactIds(?:"\s*%\s*|:+))("?)($currentVersion)("|`)""".r
+          replaceSomeInAllowedParts(
+            regex,
+            target,
+            match0 => {
+              val precedingCharacters = match0.group(1)
+              val dependency = match0.group(2)
+              val versionPrefix = match0.group(4)
+              val versionSuffix = match0.group(6)
+              if (shouldBeIgnored(precedingCharacters)) None
+              else
+                Some(
+                  Regex.quoteReplacement(
+                    s"""$precedingCharacters$dependency$versionPrefix${update.nextVersion}$versionSuffix"""
+                  )
                 )
-              )
-          }
-        ).someIfChanged
-      } >>= replaceGroupF(update)
+            }
+          ).someIfChanged
+        } >>= replaceGroupF(update)
   )
 
   val strict = UpdateHeuristic(
@@ -155,13 +162,16 @@ object UpdateHeuristic {
 
   val relaxed = UpdateHeuristic(
     name = "relaxed",
-    replaceVersion = defaultReplaceVersion(update => util.string.extractWords(update.artifactId))
+    replaceVersion = defaultReplaceVersion { update =>
+      util.string.extractWords(update.mainArtifactId)
+    }
   )
 
   val sliding = UpdateHeuristic(
     name = "sliding",
-    replaceVersion =
-      defaultReplaceVersion(_.artifactId.sliding(5).take(5).filterNot(_ === "scala").toList)
+    replaceVersion = defaultReplaceVersion(
+      _.mainArtifactId.toSeq.sliding(5).map(_.unwrap).take(5).filterNot(_ === "scala").toList
+    )
   )
 
   val completeGroupId = UpdateHeuristic(
@@ -184,8 +194,10 @@ object UpdateHeuristic {
   val specific = UpdateHeuristic(
     name = "specific",
     replaceVersion = defaultReplaceVersion {
-      case Update.Single(GroupId("org.scalameta"), "scalafmt-core", _, _, _, _) => List("version")
-      case _                                                                    => List.empty
+      case s: Update.Single
+          if s.groupId === GroupId("org.scalameta") && s.artifactId.name === "scalafmt-core" =>
+        List("version")
+      case _ => List.empty
     }
   )
 

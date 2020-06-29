@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -50,9 +50,12 @@ object Cli {
       doNotFork: Boolean = false,
       ignoreOptsFiles: Boolean = false,
       envVar: List[EnvVar] = Nil,
-      pruneRepos: Boolean = false,
       processTimeout: FiniteDuration = 10.minutes,
-      scalafixMigrations: Option[String] = None
+      scalafixMigrations: Option[String] = None,
+      groupMigrations: Option[String] = None,
+      cacheTtl: FiniteDuration = 2.hours,
+      cacheMissDelay: FiniteDuration = 0.milliseconds,
+      bitbucketServerUseDefaultReviewers: Boolean = false
   )
 
   final case class EnvVar(name: String, value: String)
@@ -68,7 +71,7 @@ object Cli {
       }
     }
 
-  implicit val finiteDurationArgParser: ArgParser[FiniteDuration] = {
+  implicit val finiteDurationArgParser: ArgParser[FiniteDuration] =
     ArgParser[String].xmapError(
       _.toString(),
       s =>
@@ -77,7 +80,6 @@ object Cli {
           MalformedValue("FiniteDuration", error)
         }
     )
-  }
 
   private def parseFiniteDuration(s: String): Either[Throwable, FiniteDuration] =
     Either.catchNonFatal(Duration(s)).flatMap {

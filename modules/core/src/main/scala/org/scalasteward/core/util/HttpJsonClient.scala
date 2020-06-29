@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,12 +22,11 @@ import io.circe.{Decoder, Encoder}
 import org.http4s.Method.{GET, POST}
 import org.http4s.circe.{jsonEncoderOf, jsonOf}
 import org.http4s.client.Client
-import org.http4s.{Headers, Method, Request, Response, Status, Uri}
-
+import org.http4s._
 import scala.util.control.NoStackTrace
 
-final class HttpJsonClient[F[_]: Sync](
-    implicit client: Client[F]
+final class HttpJsonClient[F[_]: Sync](implicit
+    client: Client[F]
 ) {
   type ModReq = Request[F] => F[Request[F]]
 
@@ -43,7 +42,7 @@ final class HttpJsonClient[F[_]: Sync](
   private def request[A: Decoder](method: Method, uri: Uri, modify: ModReq): F[A] =
     client.expectOr[A](modify(Request[F](method, uri)))(resp =>
       toUnexpectedResponse(uri, method, resp)
-    )(jsonOf[F, A])
+    )(jsonOf[F, A].transform(_.leftMap(failure => JsonParseError(uri, method, failure))))
 
   private def toUnexpectedResponse(
       uri: Uri,
@@ -53,6 +52,17 @@ final class HttpJsonClient[F[_]: Sync](
     val body = response.body.through(fs2.text.utf8Decode).compile.string
     body.map(UnexpectedResponse(uri, method, response.headers, response.status, _))
   }
+}
+
+final case class JsonParseError(
+    uri: Uri,
+    method: Method,
+    underlying: DecodeFailure
+) extends DecodeFailure {
+  val message = s"uri: $uri\nmethod: $method\nmessage: ${underlying.message}"
+  override def cause: Option[Throwable] = underlying.some
+  override def toHttpResponse[F[_]](httpVersion: HttpVersion): Response[F] =
+    underlying.toHttpResponse(httpVersion)
 }
 
 final case class UnexpectedResponse(

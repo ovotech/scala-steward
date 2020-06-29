@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,20 +16,20 @@
 
 package org.scalasteward.core.scalafix
 
-import org.scalasteward.core.data.{GroupId, Version}
-import org.scalasteward.core.util.Nel
 import io.circe.Decoder
 import io.circe.generic.semiauto._
-import io.circe.Decoder._
+import org.scalasteward.core.data.{GroupId, Version}
+import org.scalasteward.core.util.Nel
 
 final case class Migration(
     groupId: GroupId,
     artifactIds: Nel[String],
     newVersion: Version,
-    rewriteRules: Nel[String]
+    rewriteRules: Nel[String],
+    doc: Option[String]
 )
 
 object Migration {
-  implicit val versionDecoder: Decoder[Version] = decodeString.map(Version.apply)
-  implicit val migrationDecoder: Decoder[Migration] = deriveDecoder[Migration]
+  implicit val migrationDecoder: Decoder[Migration] =
+    deriveDecoder[Migration]
 }

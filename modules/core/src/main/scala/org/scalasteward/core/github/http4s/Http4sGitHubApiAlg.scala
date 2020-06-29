@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,8 +26,7 @@ import org.scalasteward.core.vcs.data._
 final class Http4sGitHubApiAlg[F[_]](
     gitHubApiHost: Uri,
     modify: Repo => Request[F] => F[Request[F]]
-)(
-    implicit
+)(implicit
     client: HttpJsonClient[F]
 ) extends VCSApiAlg[F] {
   private val url = new Url(gitHubApiHost)

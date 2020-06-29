@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,50 +16,49 @@
 
 package org.scalasteward.core.update
 
-import cats.Monad
+import cats.{Eval, Monad}
 import cats.implicits._
-import io.chrisdavenport.log4cats.Logger
-import org.scalasteward.core.coursier.CoursierAlg
-import org.scalasteward.core.data.{Dependency, GroupId, Update}
-import org.scalasteward.core.util
+import org.scalasteward.core.coursier.VersionsCache
+import org.scalasteward.core.data._
+import org.scalasteward.core.repoconfig.RepoConfig
 import org.scalasteward.core.util.Nel
+import scala.concurrent.duration.FiniteDuration
 
-final class UpdateAlg[F[_]](
-    implicit
-    coursierAlg: CoursierAlg[F],
+final class UpdateAlg[F[_]](implicit
     filterAlg: FilterAlg[F],
-    logger: Logger[F],
+    versionsCache: VersionsCache[F],
+    groupMigrations: GroupMigrations,
     F: Monad[F]
 ) {
-  def findUpdate(dependency: Dependency): F[Option[Update.Single]] =
+  def findUpdate(
+      dependency: Scope[Dependency],
+      maxAge: Option[FiniteDuration]
+  ): F[Option[Update.Single]] =
     for {
-      newerVersions0 <- coursierAlg.getNewerVersions(dependency)
-      maybeUpdate0 = Nel.fromList(newerVersions0).map { newerVersions1 =>
-        dependency.toUpdate.copy(newerVersions = newerVersions1.map(_.value))
+      versions <- versionsCache.getVersions(dependency, maxAge)
+      current = Version(dependency.value.version)
+      maybeNewerVersions = Nel.fromList(versions.filter(_ > current))
+      maybeUpdate0 = maybeNewerVersions.map { newerVersions =>
+        Update.Single(CrossDependency(dependency.value), newerVersions.map(_.value))
       }
-      maybeUpdate1 <- maybeUpdate0.flatTraverse(filterAlg.globalFilterOne)
-      maybeUpdate2 = maybeUpdate1.orElse(UpdateAlg.findUpdateUnderNewGroup(dependency))
-      _ <- maybeUpdate2.fold(F.unit)(update => logger.info(s"Found update: ${update.show}"))
-    } yield maybeUpdate2
+      migratedUpdate = Eval.later(groupMigrations.findUpdateWithNewerGroupId(dependency.value))
+      maybeUpdate1 = maybeUpdate0.orElse(migratedUpdate.value)
+    } yield maybeUpdate1
+  def findUpdates(
+      dependencies: List[Scope.Dependency],
+      repoConfig: RepoConfig,
+      maxAge: Option[FiniteDuration]
+  ): F[List[Update.Single]] = {
+    val updates = dependencies.traverseFilter(findUpdate(_, maxAge))
+    updates.flatMap(filterAlg.localFilterMany(repoConfig, _))
+  }
 }
 
 object UpdateAlg {
-  def isUpdateFor(update: Update, dependency: Dependency): Boolean =
-    update.groupId === dependency.groupId &&
-      update.artifactIds.contains_(dependency.artifactId) &&
-      update.currentVersion === dependency.version
-
-  def getNewerGroupId(currentGroupId: GroupId, artifactId: String): Option[(GroupId, String)] =
-    Some((currentGroupId.value, artifactId)).collect {
-      case ("org.spire-math", "kind-projector")   => (GroupId("org.typelevel"), "0.10.0")
-      case ("com.github.mpilquist", "simulacrum") => (GroupId("org.typelevel"), "1.0.0")
-      case ("com.geirsson", "sbt-scalafmt")       => (GroupId("org.scalameta"), "2.0.0")
-      case ("net.ceedubs", "ficus")               => (GroupId("com.iheart"), "1.3.4")
-    }
-
-  def findUpdateUnderNewGroup(dep: Dependency): Option[Update.Single] =
-    getNewerGroupId(dep.groupId, dep.artifactId).map {
-      case (newId, fromVersion) =>
-        dep.toUpdate.copy(newerGroupId = Some(newId), newerVersions = util.Nel.of(fromVersion))
+  def isUpdateFor(update: Update, crossDependency: CrossDependency): Boolean =
+    crossDependency.dependencies.forall { dependency =>
+      update.groupId === dependency.groupId &&
+      update.currentVersion === dependency.version &&
+      update.artifactIds.contains_(dependency.artifactId)
     }
 }

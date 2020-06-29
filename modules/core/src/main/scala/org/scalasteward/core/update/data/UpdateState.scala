@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,27 +17,56 @@
 package org.scalasteward.core.update.data
 
 import org.http4s.Uri
-import org.scalasteward.core.data.{Dependency, Update}
-import org.scalasteward.core.update.FilterAlg.RejectionReason
+import org.scalasteward.core.data.{CrossDependency, Update}
 
 sealed trait UpdateState extends Product with Serializable {
-  def dependency: Dependency
+  def crossDependency: CrossDependency
 }
 
 object UpdateState {
-  final case class DependencyUpToDate(dependency: Dependency) extends UpdateState
+  final case class DependencyUpToDate(
+      crossDependency: CrossDependency
+  ) extends UpdateState
 
-  final case class DependencyOutdated(dependency: Dependency, update: Update) extends UpdateState
+  final case class DependencyOutdated(
+      crossDependency: CrossDependency,
+      update: Update.Single
+  ) extends UpdateState
 
-  final case class UpdateRejectedByConfig(dependency: Dependency, rejectionReason: RejectionReason)
-      extends UpdateState
+  final case class PullRequestUpToDate(
+      crossDependency: CrossDependency,
+      update: Update.Single,
+      pullRequest: Uri
+  ) extends UpdateState
 
-  final case class PullRequestUpToDate(dependency: Dependency, update: Update, pullRequest: Uri)
-      extends UpdateState
+  final case class PullRequestOutdated(
+      crossDependency: CrossDependency,
+      update: Update.Single,
+      pullRequest: Uri
+  ) extends UpdateState
 
-  final case class PullRequestOutdated(dependency: Dependency, update: Update, pullRequest: Uri)
-      extends UpdateState
+  final case class PullRequestClosed(
+      crossDependency: CrossDependency,
+      update: Update.Single,
+      pullRequest: Uri
+  ) extends UpdateState
 
-  final case class PullRequestClosed(dependency: Dependency, update: Update, pullRequest: Uri)
-      extends UpdateState
+  def show(updateState: UpdateState): String = {
+    val groupId = updateState.crossDependency.head.groupId
+    val artifacts = updateState.crossDependency.showArtifactNames
+    val version = updateState.crossDependency.head.version
+    val gav = s"$groupId:$artifacts : $version"
+    updateState match {
+      case DependencyUpToDate(_) =>
+        s"up-to-date: $gav"
+      case DependencyOutdated(_, update) =>
+        s"new version: $gav -> ${update.newerVersions.head}"
+      case PullRequestUpToDate(_, update, pullRequest) =>
+        s"PR opened: $gav -> ${update.newerVersions.head} ($pullRequest)"
+      case PullRequestOutdated(_, update, pullRequest) =>
+        s"PR outdated: $gav -> ${update.newerVersions.head} ($pullRequest)"
+      case PullRequestClosed(_, update, pullRequest) =>
+        s"PR closed: $gav -> ${update.newerVersions.head} ($pullRequest)"
+    }
+  }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,8 +19,8 @@ package org.scalasteward.core.data
 import cats.Order
 import cats.implicits._
 import eu.timepit.refined.types.numeric.NonNegInt
-import io.circe.generic.semiauto.{deriveDecoder, deriveEncoder}
-import io.circe.{Decoder, Encoder}
+import io.circe.Codec
+import io.circe.generic.extras.semiauto.deriveUnwrappedCodec
 import scala.annotation.tailrec
 
 final case class Version(value: String) {
@@ -92,17 +92,14 @@ final case class Version(value: String) {
 }
 
 object Version {
+  implicit val versionCodec: Codec[Version] =
+    deriveUnwrappedCodec
+
   implicit val versionOrder: Order[Version] =
     Order.from[Version] { (v1, v2) =>
       val (c1, c2) = padToSameLength(v1.alnumComponents, v2.alnumComponents, Component.Empty)
       c1.compare(c2)
     }
-
-  implicit val versionDecoder: Decoder[Version] =
-    deriveDecoder
-
-  implicit val versionEncoder: Encoder[Version] =
-    deriveEncoder
 
   private def padToSameLength[A](l1: List[A], l2: List[A], elem: A): (List[A], List[A]) = {
     val maxLength = math.max(l1.length, l2.length)
@@ -111,17 +108,20 @@ object Version {
 
   sealed trait Component extends Product with Serializable
   object Component {
-    final case class Numeric(value: String) extends Component
+    final case class Numeric(value: String) extends Component {
+      def isZero: Boolean = BigInt(value) === BigInt(0)
+    }
     final case class Alpha(value: String) extends Component {
       def isPreReleaseIdent: Boolean = order < 0
-      def order: Int = value.toUpperCase match {
-        case "SNAP" | "SNAPSHOT"      => -5
-        case "ALPHA" | "PREVIEW"      => -4
-        case "BETA" | "B"             => -3
-        case "M" | "MILESTONE" | "AM" => -2
-        case "RC"                     => -1
-        case _                        => 0
-      }
+      def order: Int =
+        value.toUpperCase match {
+          case "SNAP" | "SNAPSHOT"      => -5
+          case "ALPHA" | "PREVIEW"      => -4
+          case "BETA" | "B"             => -3
+          case "M" | "MILESTONE" | "AM" => -2
+          case "RC"                     => -1
+          case _                        => 0
+        }
     }
     final case class Separator(c: Char) extends Component
     case object Empty extends Component
@@ -176,18 +176,18 @@ object Version {
     // using different pre-release identifiers.
     implicit val componentOrder: Order[Component] =
       Order.from[Component] {
-        case (Numeric(v1), Numeric(v2)) => BigInt(v1).compare(BigInt(v2))
-        case (Numeric(_), a @ Alpha(_)) => if (a.isPreReleaseIdent) 1 else -1
-        case (a @ Alpha(_), Numeric(_)) => if (a.isPreReleaseIdent) -1 else 1
-        case (Numeric(_), _)            => 1
-        case (_, Numeric(_))            => -1
+        case (Numeric(v1), Numeric(v2))     => BigInt(v1).compare(BigInt(v2))
+        case (n @ Numeric(_), a @ Alpha(_)) => if (a.isPreReleaseIdent || !n.isZero) 1 else -1
+        case (a @ Alpha(_), n @ Numeric(_)) => if (a.isPreReleaseIdent || !n.isZero) -1 else 1
+        case (Numeric(_), _)                => 1
+        case (_, Numeric(_))                => -1
 
         case (a1 @ Alpha(v1), a2 @ Alpha(v2)) =>
           val (o1, o2) = (a1.order, a2.order)
           if (o1 < 0 || o2 < 0) o1.compare(o2) else v1.compare(v2)
 
-        case (a @ Alpha(_), Empty) if a.isPreReleaseIdent => -1
-        case (Empty, a @ Alpha(_)) if a.isPreReleaseIdent => 1
+        case (Alpha(_), Empty) => -1
+        case (Empty, Alpha(_)) => 1
 
         case (Alpha(_), _) => 1
         case (_, Alpha(_)) => -1

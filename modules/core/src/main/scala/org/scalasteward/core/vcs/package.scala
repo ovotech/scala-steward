@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,9 +17,11 @@
 package org.scalasteward.core
 
 import cats.implicits._
+import org.http4s.Uri
 import org.scalasteward.core.application.SupportedVCS
 import org.scalasteward.core.application.SupportedVCS.{Bitbucket, BitbucketServer, GitHub, Gitlab}
-import org.scalasteward.core.data.Update
+import org.scalasteward.core.data.ReleaseRelatedUrl.VersionDiff
+import org.scalasteward.core.data.{ReleaseRelatedUrl, Update}
 import org.scalasteward.core.vcs.data.Repo
 
 package object vcs {
@@ -52,56 +54,74 @@ package object vcs {
     List(s"v$version", version, s"release-$version")
 
   val possibleChangelogFilenames: List[String] = {
-    val basenames = List(
+    val baseNames = List(
       "CHANGELOG",
       "Changelog",
       "changelog",
-      "CHANGES",
+      "CHANGES"
+    )
+    possibleFilenames(baseNames)
+  }
+
+  val possibleReleaseNotesFilenames: List[String] = {
+    val baseNames = List(
       "ReleaseNotes",
       "RELEASES",
       "Releases",
       "releases"
     )
-    val extensions = List("md", "markdown", "rst")
-    (basenames, extensions).mapN { case (base, ext) => s"$base.$ext" }
+    possibleFilenames(baseNames)
   }
 
-  def possibleCompareUrls(repoUrl: String, update: Update): List[String] = {
+  def possibleCompareUrls(repoUrl: Uri, update: Update): List[VersionDiff] = {
+    val host = repoUrl.host.map(_.value)
     val from = update.currentVersion
     val to = update.nextVersion
-    val canonicalized = repoUrl.replaceAll("/$", "")
-    if (repoUrl.startsWith("https://github.com/") || repoUrl.startsWith("https://gitlab.com/"))
+
+    if (host.exists(Set("github.com", "gitlab.com")))
       possibleTags(from).zip(possibleTags(to)).map {
-        case (from1, to1) => s"${canonicalized}/compare/$from1...$to1"
+        case (from1, to1) => VersionDiff(repoUrl / "compare" / s"$from1...$to1")
       }
-    else if (repoUrl.startsWith("https://bitbucket.org/"))
+    else if (host.contains_("bitbucket.org"))
       possibleTags(from).zip(possibleTags(to)).map {
-        case (from1, to1) => s"${canonicalized}/compare/${to1}..${from1}#diff"
+        case (from1, to1) =>
+          VersionDiff((repoUrl / "compare" / s"$to1..$from1").withFragment("diff"))
       }
     else
       List.empty
   }
 
-  def possibleChangelogUrls(repoUrl: String, update: Update): List[String] = {
-    val canonicalized = repoUrl.replaceAll("/$", "")
-    val vcsSpecific =
-      if (repoUrl.startsWith("https://github.com/"))
-        possibleTags(update.nextVersion).map(tag => s"${canonicalized}/releases/tag/$tag")
+  def possibleReleaseRelatedUrls(repoUrl: Uri, update: Update): List[ReleaseRelatedUrl] = {
+    val host = repoUrl.host.map(_.value)
+    val github =
+      if (host.contains_("github.com"))
+        possibleTags(update.nextVersion).map(tag =>
+          ReleaseRelatedUrl.GitHubReleaseNotes(repoUrl / "releases" / "tag" / tag)
+        )
       else
         List.empty
-    val files = {
-      val pathToFile =
-        if (repoUrl.startsWith("https://github.com/") || repoUrl.startsWith("https://gitlab.com/")) {
-          Some("blob/master")
-        } else if (repoUrl.startsWith("https://bitbucket.org/")) {
-          Some("master")
-        } else {
+    def files(fileNames: List[String]): List[Uri] = {
+      val maybeSegments =
+        if (host.exists(Set("github.com", "gitlab.com")))
+          Some(List("blob", "master"))
+        else if (host.contains_("bitbucket.org"))
+          Some(List("master"))
+        else
           None
-        }
-      pathToFile.toList.flatMap { path =>
-        possibleChangelogFilenames.map(name => s"${canonicalized}/${path}/$name")
+      maybeSegments.toList.flatMap { segments =>
+        val base = segments.foldLeft(repoUrl)(_ / _)
+        fileNames.map(name => base / name)
       }
     }
-    files ++ vcsSpecific
+    val customChangelog = files(possibleChangelogFilenames).map(ReleaseRelatedUrl.CustomChangelog)
+    val customReleaseNotes =
+      files(possibleReleaseNotesFilenames).map(ReleaseRelatedUrl.CustomReleaseNotes)
+
+    github ++ customReleaseNotes ++ customChangelog ++ possibleCompareUrls(repoUrl, update)
+  }
+
+  private def possibleFilenames(baseNames: List[String]): List[String] = {
+    val extensions = List("md", "markdown", "rst")
+    (baseNames, extensions).mapN { case (base, ext) => s"$base.$ext" }
   }
 }

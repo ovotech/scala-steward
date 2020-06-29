@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,24 +21,23 @@ import cats.Traverse
 import cats.implicits._
 import fs2.Stream
 import io.chrisdavenport.log4cats.Logger
+import org.scalasteward.core.buildtool.BuildToolDispatcher
 import org.scalasteward.core.data.Update
-import org.scalasteward.core.io.{isFileSpecificTo, isSourceFile, FileAlg, WorkspaceAlg}
-import org.scalasteward.core.sbt.SbtAlg
+import org.scalasteward.core.io.{isSourceFile, FileAlg, WorkspaceAlg}
+import org.scalasteward.core.scalafix.MigrationAlg
 import org.scalasteward.core.util._
 import org.scalasteward.core.vcs.data.Repo
-import org.scalasteward.core.scalafix.MigrationAlg
 
-final class EditAlg[F[_]](
-    implicit
+final class EditAlg[F[_]](implicit
+    buildToolDispatcher: BuildToolDispatcher[F],
     fileAlg: FileAlg[F],
     logger: Logger[F],
-    sbtAlg: SbtAlg[F],
+    migrationAlg: MigrationAlg,
     streamCompiler: Stream.Compiler[F, F],
     workspaceAlg: WorkspaceAlg[F],
-    migrationAlg: MigrationAlg[F],
     F: MonadThrowable[F]
 ) {
-  def applyUpdate(repo: Repo, update: Update): F[Unit] =
+  def applyUpdate(repo: Repo, update: Update, fileExtensions: Set[String]): F[Unit] =
     for {
       _ <- applyScalafixMigrations(repo, update).handleErrorWith(e =>
         logger.warn(s"Could not apply ${update.show} : $e")
@@ -47,7 +46,7 @@ final class EditAlg[F[_]](
       files <- fileAlg.findFilesContaining(
         repoDir,
         update.currentVersion,
-        f => isSourceFile(f) && isFileSpecificTo(update)(f)
+        isSourceFile(update, fileExtensions)
       )
       noFilesFound = logger.warn("No files found that contain the current version")
       _ <- files.toNel.fold(noFilesFound)(applyUpdateTo(_, update))
@@ -62,9 +61,8 @@ final class EditAlg[F[_]](
   }
 
   def applyScalafixMigrations(repo: Repo, update: Update): F[Unit] =
-    migrationAlg.findMigrations(update) >>= { migrationsList =>
-      Nel.fromList(migrationsList).fold(F.unit) { migrations =>
-        logger.info(s"Applying migrations: $migrations") >> sbtAlg.runMigrations(repo, migrations)
-      }
+    Nel.fromList(migrationAlg.findMigrations(update)).traverse_ { migrations =>
+      logger.info(s"Applying migrations: $migrations") >>
+        buildToolDispatcher.runMigrations(repo, migrations)
     }
 }

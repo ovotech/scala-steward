@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,31 +20,35 @@ import better.files.File
 import cats.Monad
 import cats.effect.ExitCode
 import cats.implicits._
+import fs2.Stream
 import io.chrisdavenport.log4cats.Logger
+import org.scalasteward.core.buildtool.sbt.SbtAlg
+import org.scalasteward.core.git.GitAlg
 import org.scalasteward.core.io.{FileAlg, WorkspaceAlg}
 import org.scalasteward.core.nurture.NurtureAlg
 import org.scalasteward.core.repocache.RepoCacheAlg
-import org.scalasteward.core.sbt.SbtAlg
 import org.scalasteward.core.update.PruningAlg
+import org.scalasteward.core.util
 import org.scalasteward.core.util.DateTimeAlg
 import org.scalasteward.core.util.logger.LoggerOps
 import org.scalasteward.core.vcs.data.Repo
 
-final class StewardAlg[F[_]](
-    implicit
+final class StewardAlg[F[_]](implicit
     config: Config,
     dateTimeAlg: DateTimeAlg[F],
     fileAlg: FileAlg[F],
+    gitAlg: GitAlg[F],
     logger: Logger[F],
     nurtureAlg: NurtureAlg[F],
     pruningAlg: PruningAlg[F],
     repoCacheAlg: RepoCacheAlg[F],
     sbtAlg: SbtAlg[F],
     selfCheckAlg: SelfCheckAlg[F],
+    streamCompiler: Stream.Compiler[F, F],
     workspaceAlg: WorkspaceAlg[F],
     F: Monad[F]
 ) {
-  def printBanner: F[Unit] = {
+  private def printBanner: F[Unit] = {
     val banner =
       """|  ____            _         ____  _                             _
          | / ___|  ___ __ _| | __ _  / ___|| |_ _____      ____ _ _ __ __| |
@@ -56,44 +60,42 @@ final class StewardAlg[F[_]](
     logger.info(msg)
   }
 
-  def prepareEnv: F[Unit] =
-    for {
-      _ <- sbtAlg.addGlobalPlugins
-      _ <- workspaceAlg.cleanWorkspace
-    } yield ()
-
-  def readRepos(reposFile: File): F[List[Repo]] =
+  private def readRepos(reposFile: File): F[List[Repo]] =
     fileAlg.readFile(reposFile).map { maybeContent =>
       val regex = """-\s+(.+)/([^/]+)""".r
       val content = maybeContent.getOrElse("")
-      content.linesIterator.collect { case regex(owner, repo) => Repo(owner.trim, repo.trim) }.toList
+      content.linesIterator.collect {
+        case regex(owner, repo) => Repo(owner.trim, repo.trim)
+      }.toList
     }
 
-  def pruneRepos(repos: List[Repo]): F[List[Repo]] =
-    logger.infoTotalTime("pruning repos") {
+  private def steward(repo: Repo): F[Either[Throwable, Unit]] = {
+    val label = s"Steward ${repo.show}"
+    logger.infoTotalTime(label) {
       for {
-        _ <- repos.traverse_(repoCacheAlg.checkCache)
-        allUpdates <- pruningAlg.checkForUpdates(repos)
-        filteredRepos <- pruningAlg.filterByApplicableUpdates(repos, allUpdates)
-        countTotal = repos.size
-        countFiltered = filteredRepos.size
-        countPruned = countTotal - countFiltered
-        _ <- logger.info(s"""Repos count:
-                            |  total    = $countTotal
-                            |  filtered = $countFiltered
-                            |  pruned   = $countPruned""".stripMargin)
-      } yield filteredRepos
+        _ <- logger.info(util.string.lineLeftRight(label))
+        _ <- repoCacheAlg.checkCache(repo)
+        (attentionNeeded, updates) <- pruningAlg.needsAttention(repo)
+        result <- {
+          if (attentionNeeded) nurtureAlg.nurture(repo, updates)
+          else gitAlg.removeClone(repo).as(().asRight[Throwable])
+        }
+      } yield result
     }
+  }
 
   def runF: F[ExitCode] =
     logger.infoTotalTime("run") {
       for {
         _ <- printBanner
         _ <- selfCheckAlg.checkAll
-        _ <- prepareEnv
-        repos <- readRepos(config.reposFile)
-        reposToNurture <- if (config.pruneRepos) pruneRepos(repos) else F.pure(repos)
-        result <- reposToNurture.traverse(nurtureAlg.nurture)
-      } yield if (result.forall(_.isRight)) ExitCode.Success else ExitCode.Error
+        exitCode <- sbtAlg.addGlobalPlugins {
+          for {
+            _ <- workspaceAlg.cleanWorkspace
+            repos <- readRepos(config.reposFile)
+            result <- Stream.emits(repos).evalMap(steward).compile.foldMonoid
+          } yield result.fold(_ => ExitCode.Error, _ => ExitCode.Success)
+        }
+      } yield exitCode
     }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -38,12 +38,12 @@ package object edit {
     }
 
   private[edit] def splitByOffOnMarker(target: String): Nel[(String, Boolean)] =
-    if (!target.contains("scala-steward:off")) {
+    if (!target.contains("scala-steward:off"))
       Nel.of((target, true))
-    } else {
+    else {
       val buffer = mutable.ListBuffer.empty[(String, Boolean)]
-      val on = StringBuilder.newBuilder
-      val off = StringBuilder.newBuilder
+      val on = new StringBuilder()
+      val off = new StringBuilder()
       val regexIgnoreMultiLinesBegins = "^\\s*//\\s*scala-steward:off".r
       def flush(builder: StringBuilder, canReplace: Boolean): Unit =
         if (builder.nonEmpty) {
@@ -51,21 +51,19 @@ package object edit {
           builder.clear()
         }
       target.linesWithSeparators.foreach { line =>
-        if (off.nonEmpty) {
+        if (off.nonEmpty)
           if (line.contains("scala-steward:on")) {
             flush(off, false)
             on.append(line)
-          } else {
+          } else
             off.append(line)
-          }
-        } else if (line.contains("scala-steward:off")) {
+        else if (line.contains("scala-steward:off")) {
           flush(on, true)
-          if (regexIgnoreMultiLinesBegins.findFirstIn(line).isDefined) {
+          if (regexIgnoreMultiLinesBegins.findFirstIn(line).isDefined)
             off.append(line)
-          } else {
+          else
             // single line off
             buffer.append((line, false))
-          }
         } else on.append(line)
       }
       flush(on, true)
