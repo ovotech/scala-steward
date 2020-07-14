@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ import org.scalasteward.core.util.Nel
 
 object show {
   def oneLiner(update: Update): String =
-    commaSeparated(update.groupId, update.artifactIds)
+    commaSeparated(update.groupId, update.crossDependencies.map(_.head.artifactId.name))
 
   private def commaSeparated(groupId: GroupId, artifactIds: Nel[String]): String = {
     val artifacts = showArtifacts(groupId, artifactIds).toList

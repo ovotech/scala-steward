@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -41,9 +41,10 @@ class Http4sBitbucketApiAlg[F[_]: Sync](
         case UnexpectedResponse(_, _, _, Status.BadRequest, _) =>
           client.get(url.repo(repo.copy(owner = user.login)), modify(repo))
       }
-      maybeParent <- fork.parent
-        .map(n => client.get[RepositoryResponse](url.repo(n), modify(n)))
-        .sequence[F, RepositoryResponse]
+      maybeParent <-
+        fork.parent
+          .map(n => client.get[RepositoryResponse](url.repo(n), modify(n)))
+          .sequence[F, RepositoryResponse]
     } yield mapToRepoOut(fork, maybeParent)
 
   private def mapToRepoOut(
@@ -77,9 +78,10 @@ class Http4sBitbucketApiAlg[F[_]: Sync](
   override def getRepo(repo: Repo): F[RepoOut] =
     for {
       repo <- client.get[RepositoryResponse](url.repo(repo), modify(repo))
-      maybeParent <- repo.parent
-        .map(n => client.get[RepositoryResponse](url.repo(n), modify(n)))
-        .sequence[F, RepositoryResponse]
+      maybeParent <-
+        repo.parent
+          .map(n => client.get[RepositoryResponse](url.repo(n), modify(n)))
+          .sequence[F, RepositoryResponse]
     } yield mapToRepoOut(repo, maybeParent)
 
   override def listPullRequests(repo: Repo, head: String, base: Branch): F[List[PullRequestOut]] =

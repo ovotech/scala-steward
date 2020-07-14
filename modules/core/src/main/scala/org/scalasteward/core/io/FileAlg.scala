@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,13 +17,14 @@
 package org.scalasteward.core.io
 
 import better.files.File
-import cats.effect.Sync
+import cats.effect.{Resource, Sync}
 import cats.implicits._
 import cats.{Functor, Traverse}
 import fs2.Stream
 import io.chrisdavenport.log4cats.Logger
 import org.apache.commons.io.FileUtils
 import org.scalasteward.core.util.MonadThrowable
+import scala.io.Source
 
 trait FileAlg[F[_]] {
   def createTemporarily[A](file: File, content: String)(fa: F[A]): F[A]
@@ -34,11 +35,15 @@ trait FileAlg[F[_]] {
 
   def home: F[File]
 
+  def isDirectory(file: File): F[Boolean]
+
   def isRegularFile(file: File): F[Boolean]
 
   def removeTemporarily[A](file: File)(fa: F[A]): F[A]
 
   def readFile(file: File): F[Option[String]]
+
+  def readResource(resource: String): F[String]
 
   def walk(dir: File): Stream[F, File]
 
@@ -47,22 +52,20 @@ trait FileAlg[F[_]] {
   def containsString(file: File, string: String)(implicit F: Functor[F]): F[Boolean] =
     readFile(file).map(_.fold(false)(_.contains(string)))
 
-  final def editFile(file: File, edit: String => Option[String])(
-      implicit F: MonadThrowable[F]
+  final def editFile(file: File, edit: String => Option[String])(implicit
+      F: MonadThrowable[F]
   ): F[Boolean] =
     readFile(file)
       .flatMap(_.flatMap(edit).fold(F.pure(false))(writeFile(file, _).as(true)))
       .adaptError { case t => new Throwable(s"failed to edit $file", t) }
 
-  final def editFiles[G[_]](files: G[File], edit: String => Option[String])(
-      implicit
+  final def editFiles[G[_]](files: G[File], edit: String => Option[String])(implicit
       F: MonadThrowable[F],
       G: Traverse[G]
   ): F[Boolean] =
     files.traverse(editFile(_, edit)).map(_.foldLeft(false)(_ || _))
 
-  final def findFilesContaining(dir: File, string: String, fileFilter: File => Boolean)(
-      implicit
+  final def findFilesContaining(dir: File, string: String, fileFilter: File => Boolean)(implicit
       streamCompiler: Stream.Compiler[F, F],
       F: Functor[F]
   ): F[List[File]] =
@@ -95,6 +98,9 @@ object FileAlg {
       override def home: F[File] =
         F.delay(File.home)
 
+      override def isDirectory(file: File): F[Boolean] =
+        F.delay(file.isDirectory(File.LinkOptions.noFollow))
+
       override def isRegularFile(file: File): F[Boolean] =
         F.delay(file.isRegularFile(File.LinkOptions.noFollow))
 
@@ -104,15 +110,18 @@ object FileAlg {
             val copyOptions = File.CopyOptions(overwrite = true)
             if (file.exists) Some(file.moveTo(File.newTemporaryFile())(copyOptions)) else None
           }
-        } { _ =>
-          fa
-        } {
+        }(_ => fa) {
           case Some(tmpFile) => F.delay(tmpFile.moveTo(file)).void
           case None          => F.unit
         }
 
       override def readFile(file: File): F[Option[String]] =
         F.delay(if (file.exists) Some(file.contentAsString) else None)
+
+      override def readResource(resource: String): F[String] =
+        Resource
+          .fromAutoCloseable(F.delay(Source.fromResource(resource)))
+          .use(src => F.delay(src.mkString))
 
       override def walk(dir: File): Stream[F, File] =
         Stream.eval(F.delay(dir.walk())).flatMap(Stream.fromIterator(_))

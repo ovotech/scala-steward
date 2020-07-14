@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -61,9 +61,12 @@ final case class Config(
     doNotFork: Boolean,
     ignoreOptsFiles: Boolean,
     envVars: List[EnvVar],
-    pruneRepos: Boolean,
     processTimeout: FiniteDuration,
-    scalafixMigrations: Option[File]
+    scalafixMigrations: Option[File],
+    groupMigrations: Option[File],
+    cacheTtl: FiniteDuration,
+    cacheMissDelay: FiniteDuration,
+    bitbucketServerUseDefaultReviewers: Boolean
 ) {
   def vcsUser[F[_]](implicit F: Sync[F]): F[AuthenticatedUser] = {
     val urlWithUser = util.uri.withUserInfo.set(UserInfo(vcsLogin, None))(vcsApiHost).renderString
@@ -93,9 +96,12 @@ object Config {
         doNotFork = args.doNotFork,
         ignoreOptsFiles = args.ignoreOptsFiles,
         envVars = args.envVar,
-        pruneRepos = args.pruneRepos,
         processTimeout = args.processTimeout,
-        scalafixMigrations = args.scalafixMigrations.map(_.toFile)
+        scalafixMigrations = args.scalafixMigrations.map(_.toFile),
+        groupMigrations = args.groupMigrations.map(_.toFile),
+        cacheTtl = args.cacheTtl,
+        cacheMissDelay = args.cacheMissDelay,
+        bitbucketServerUseDefaultReviewers = args.bitbucketServerUseDefaultReviewers
       )
     }
 }

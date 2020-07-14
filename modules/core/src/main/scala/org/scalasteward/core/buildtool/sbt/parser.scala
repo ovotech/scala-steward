@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,28 +14,28 @@
  * limitations under the License.
  */
 
-package org.scalasteward.core.sbt
+package org.scalasteward.core.buildtool.sbt
 
 import cats.implicits._
 import io.circe.Decoder
 import io.circe.parser._
-import org.scalasteward.core.data.{Dependency, RawUpdate}
-import org.scalasteward.core.sbt.data.SbtVersion
+import org.scalasteward.core.buildtool.sbt.data.SbtVersion
+import org.scalasteward.core.data._
 
 object parser {
   def parseBuildProperties(s: String): Option[SbtVersion] =
     """sbt.version\s*=\s*(.+)""".r.findFirstMatchIn(s).map(_.group(1)).map(SbtVersion.apply)
 
   /** Parses the output of our own `stewardDependencies` task. */
-  def parseDependencies(lines: List[String]): List[Dependency] =
-    lines.flatMap(line => decode[Dependency](removeSbtNoise(line)).toList)
-
-  def parseDependenciesAndUpdates(lines: List[String]): (List[Dependency], List[RawUpdate]) =
-    lines.flatMap { line =>
-      parse(removeSbtNoise(line)).flatMap { json =>
-        Decoder[Dependency].either(Decoder[RawUpdate]).decodeJson(json)
-      }.toList
-    }.separate
+  def parseDependencies(lines: List[String]): List[Scope.Dependencies] = {
+    val chunks = fs2.Stream.emits(lines).map(removeSbtNoise).split(_ === "--- snip ---")
+    val decoder = Decoder[Dependency].either(Decoder[Resolver])
+    chunks.mapFilter { chunk =>
+      val (dependencies, resolvers) = chunk.toList.flatMap(decode(_)(decoder).toList).separate
+      if (dependencies.isEmpty || resolvers.isEmpty) None
+      else Some(Scope(dependencies, resolvers.sorted))
+    }.toList
+  }
 
   private def removeSbtNoise(s: String): String =
     s.replace("[info]", "").trim

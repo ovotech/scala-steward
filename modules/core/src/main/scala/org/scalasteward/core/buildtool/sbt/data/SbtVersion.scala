@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,21 +14,22 @@
  * limitations under the License.
  */
 
-package org.scalasteward.core.data
+package org.scalasteward.core.buildtool.sbt.data
 
-import io.circe.Decoder
-import io.circe.generic.semiauto.deriveDecoder
-import org.scalasteward.core.util.Nel
+import cats.Order
+import cats.implicits._
+import io.circe.Codec
+import io.circe.generic.extras.semiauto._
+import org.scalasteward.core.data.Version
 
-final case class RawUpdate(
-    dependency: Dependency,
-    newerVersions: Nel[String]
-) {
-  def toUpdate: Update.Single =
-    dependency.toUpdate.copy(newerVersions = newerVersions)
+final case class SbtVersion(value: String) {
+  def toVersion: Version = Version(value)
 }
 
-object RawUpdate {
-  implicit val rawUpdateDecoder: Decoder[RawUpdate] =
-    deriveDecoder
+object SbtVersion {
+  implicit val sbtVersionCodec: Codec[SbtVersion] =
+    deriveUnwrappedCodec
+
+  implicit val sbtVersionOrder: Order[SbtVersion] =
+    Order[String].contramap(_.value)
 }

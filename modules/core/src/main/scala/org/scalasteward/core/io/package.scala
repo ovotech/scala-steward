@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,22 +21,28 @@ import cats.implicits._
 import org.scalasteward.core.data.{GroupId, Update}
 
 package object io {
-  def isSourceFile(file: File): Boolean = {
-    val scalaOrSbtFile = file.extension.exists(Set(".scala", ".sbt"))
-    val travisYmlFile = file.name === ".travis.yml"
-    val sbtPropertiesFile = file.name === "build.properties"
-    val scalafmtConfFile = file.name === ".scalafmt.conf"
+  def isSourceFile(update: Update, fileExtensions: Set[String])(file: File): Boolean = {
     val notInGitDir = !file.pathAsString.contains(".git/")
-    val ammoniteFile = file.extension.exists(_ === ".sc")
-    (scalaOrSbtFile || travisYmlFile || sbtPropertiesFile || scalafmtConfFile || ammoniteFile) && notInGitDir
+    notInGitDir && isSpecificOrGenericSourceFile(update, fileExtensions)(file)
   }
 
-  def isFileSpecificTo(update: Update)(f: File): Boolean =
-    update match {
-      case Update.Single(GroupId("org.scala-sbt"), "sbt", _, _, _, _) =>
-        f.name === "build.properties"
-      case Update.Single(GroupId("org.scalameta"), "scalafmt-core", _, _, _, _) =>
-        f.name === ".scalafmt.conf"
-      case _ => true
+  private def isSpecificOrGenericSourceFile(update: Update, fileExtensions: Set[String])(
+      file: File
+  ): Boolean =
+    () match {
+      case _ if isSbtUpdate(update)          => file.name === "build.properties"
+      case _ if isScalafmtCoreUpdate(update) => file.name === ".scalafmt.conf"
+      case _                                 => isGenericSourceFile(file, fileExtensions)
     }
+
+  private def isGenericSourceFile(file: File, fileExtensions: Set[String]): Boolean =
+    fileExtensions.exists(file.name.endsWith)
+
+  private def isSbtUpdate(update: Update): Boolean =
+    update.groupId === GroupId("org.scala-sbt") &&
+      update.artifactIds.exists(_.name === "sbt")
+
+  private def isScalafmtCoreUpdate(update: Update): Boolean =
+    update.groupId === GroupId("org.scalameta") &&
+      update.artifactIds.exists(_.name === "scalafmt-core")
 }

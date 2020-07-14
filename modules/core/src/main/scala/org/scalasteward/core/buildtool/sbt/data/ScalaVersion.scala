@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,19 +14,19 @@
  * limitations under the License.
  */
 
-package org.scalasteward.core.sbt.data
+package org.scalasteward.core.buildtool.sbt.data
 
-import io.circe.{Decoder, Encoder}
-import org.scalasteward.core.data.Version
+import cats.Order
+import cats.implicits._
+import io.circe.Codec
+import io.circe.generic.extras.semiauto._
 
-final case class SbtVersion(value: String) {
-  def toVersion: Version = Version(value)
-}
+final case class ScalaVersion(value: String)
 
-object SbtVersion {
-  implicit val sbtVersionDecoder: Decoder[SbtVersion] =
-    Decoder[String].map(SbtVersion.apply)
+object ScalaVersion {
+  implicit val scalaVersionCodec: Codec[ScalaVersion] =
+    deriveUnwrappedCodec
 
-  implicit val sbtVersionEncoder: Encoder[SbtVersion] =
-    Encoder[String].contramap(_.value)
+  implicit val scalaVersionOrder: Order[ScalaVersion] =
+    Order[String].contramap(_.value)
 }

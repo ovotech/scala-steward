@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,20 +14,14 @@
  * limitations under the License.
  */
 
-package org.scalasteward.core.update
+package org.scalasteward.core.buildtool.sbt
 
-import cats.Applicative
-import org.scalasteward.core.data.Update
-import org.scalasteward.core.persistence.KeyValueStore
-
-final class UpdateRepository[F[_]: Applicative](
-    kvStore: KeyValueStore[F, String, List[Update.Single]]
-) {
-  private val key = "updates"
-
-  def deleteAll: F[Unit] =
-    kvStore.delete(key)
-
-  def saveMany(updates: List[Update.Single]): F[Unit] =
-    kvStore.update(key)(_.getOrElse(List.empty) ++ updates)
+object command {
+  val setOffline = "set offline := true"
+  val stewardDependencies = "stewardDependencies"
+  val crossStewardDependencies = s"+ $stewardDependencies"
+  val reloadPlugins = "reload plugins"
+  val scalafix = "scalafix"
+  val testScalafix = "test:scalafix"
+  val scalafixEnable = "scalafixEnable"
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -34,9 +34,9 @@ object ProcessAlg {
   abstract class UsingFirejail[F[_]](config: Config) extends ProcessAlg[F] {
     override def execSandboxed(command: Nel[String], cwd: File): F[List[String]] = {
       val envVars = config.envVars.map(EnvVar.unapply(_).get)
-      if (config.disableSandbox) {
+      if (config.disableSandbox)
         exec(command, cwd, envVars: _*)
-      } else {
+      else {
         val whitelisted = (cwd.pathAsString :: config.whitelistedDirectories)
           .map(dir => s"--whitelist=$dir")
         val readOnly = config.readOnlyDirectories
@@ -46,8 +46,7 @@ object ProcessAlg {
     }
   }
 
-  def create[F[_]](blocker: Blocker)(
-      implicit
+  def create[F[_]](blocker: Blocker)(implicit
       config: Config,
       contextShift: ContextShift[F],
       logger: Logger[F],

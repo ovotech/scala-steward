@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,20 +17,19 @@
 package org.scalasteward.core
 
 import cats.implicits._
-import org.scalasteward.core.data.{Dependency, GroupId, Version}
+import org.scalasteward.core.data.{ArtifactId, Dependency, GroupId, Version}
 
 package object scalafmt {
   def scalafmtDependency(scalaBinaryVersion: String)(scalafmtVersion: Version): Dependency =
     Dependency(
       GroupId(if (scalafmtVersion > Version("2.0.0-RC1")) "org.scalameta" else "com.geirsson"),
-      "scalafmt-core",
-      s"scalafmt-core_${scalaBinaryVersion}",
+      ArtifactId("scalafmt-core", s"scalafmt-core_$scalaBinaryVersion"),
       scalafmtVersion.value
     )
 
   def parseScalafmtConf(s: String): Option[Version] =
     """version\s*=\s*(.+)""".r
       .findFirstMatchIn(s)
-      .map(_.group(1).replaceAllLiterally("\"", ""))
+      .map(_.group(1).replace("\"", ""))
       .map(Version.apply)
 }

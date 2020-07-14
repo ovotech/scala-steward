@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,28 +16,28 @@
 
 package org.scalasteward.core.repocache
 
+import cats.Parallel
 import cats.implicits._
 import io.chrisdavenport.log4cats.Logger
 import org.scalasteward.core.application.Config
+import org.scalasteward.core.buildtool.BuildToolDispatcher
+import org.scalasteward.core.data.{Dependency, DependencyInfo}
 import org.scalasteward.core.git.GitAlg
 import org.scalasteward.core.repoconfig.RepoConfigAlg
-import org.scalasteward.core.sbt.SbtAlg
-import org.scalasteward.core.scalafmt.ScalafmtAlg
 import org.scalasteward.core.util.MonadThrowable
 import org.scalasteward.core.util.logger.LoggerOps
 import org.scalasteward.core.vcs.data.{Repo, RepoOut}
 import org.scalasteward.core.vcs.{VCSApiAlg, VCSRepoAlg}
 
-final class RepoCacheAlg[F[_]](
-    implicit
+final class RepoCacheAlg[F[_]](implicit
+    buildToolDispatcher: BuildToolDispatcher[F],
     config: Config,
     gitAlg: GitAlg[F],
     logger: Logger[F],
+    parallel: Parallel[F],
     refreshErrorAlg: RefreshErrorAlg[F],
     repoCacheRepository: RepoCacheRepository[F],
     repoConfigAlg: RepoConfigAlg[F],
-    sbtAlg: SbtAlg[F],
-    scalafmtAlg: ScalafmtAlg[F],
     vcsApiAlg: VCSApiAlg[F],
     vcsRepoAlg: VCSRepoAlg[F],
     F: MonadThrowable[F]
@@ -45,10 +45,12 @@ final class RepoCacheAlg[F[_]](
   def checkCache(repo: Repo): F[Unit] =
     logger.attemptLog_(s"Check cache of ${repo.show}") {
       F.ifM(refreshErrorAlg.failedRecently(repo))(
-        F.unit,
+        logger.info(s"Skipping due to previous error"),
         for {
-          (repoOut, branchOut) <- vcsApiAlg.createForkOrGetRepoWithDefaultBranch(config, repo)
-          cachedSha1 <- repoCacheRepository.findSha1(repo)
+          ((repoOut, branchOut), cachedSha1) <- (
+              vcsApiAlg.createForkOrGetRepoWithDefaultBranch(config, repo),
+              repoCacheRepository.findSha1(repo)
+          ).parTupled
           latestSha1 = branchOut.commit.sha
           refreshRequired = cachedSha1.forall(_ =!= latestSha1)
           _ <- if (refreshRequired) cloneAndRefreshCache(repo, repoOut) else F.unit
@@ -62,7 +64,6 @@ final class RepoCacheAlg[F[_]](
       _ <- vcsRepoAlg.clone(repo, repoOut)
       _ <- vcsRepoAlg.syncFork(repo, repoOut)
       _ <- refreshCache(repo)
-      _ <- gitAlg.removeClone(repo)
     } yield ()
 
   private def refreshCache(repo: Repo): F[Unit] =
@@ -77,15 +78,13 @@ final class RepoCacheAlg[F[_]](
     for {
       branch <- gitAlg.currentBranch(repo)
       latestSha1 <- gitAlg.latestSha1(repo, branch)
-      dependencies <- sbtAlg.getDependencies(repo)
-      maybeSbtVersion <- sbtAlg.getSbtVersion(repo)
-      maybeScalafmtVersion <- scalafmtAlg.getScalafmtVersion(repo)
+      dependencies <- buildToolDispatcher.getDependencies(repo)
+      dependencyInfos <-
+        dependencies
+          .traverse(_.traverse(_.traverse(gatherDependencyInfo(repo, _))))
       maybeRepoConfig <- repoConfigAlg.readRepoConfig(repo)
-    } yield RepoCache(
-      latestSha1,
-      dependencies,
-      maybeSbtVersion,
-      maybeScalafmtVersion,
-      maybeRepoConfig
-    )
+    } yield RepoCache(latestSha1, dependencyInfos, maybeRepoConfig)
+
+  private def gatherDependencyInfo(repo: Repo, dependency: Dependency): F[DependencyInfo] =
+    gitAlg.findFilesContaining(repo, dependency.version).map(DependencyInfo(dependency, _))
 }

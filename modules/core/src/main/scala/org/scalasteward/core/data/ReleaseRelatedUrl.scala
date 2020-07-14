@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,13 +14,17 @@
  * limitations under the License.
  */
 
-package org.scalasteward.core.sbt
+package org.scalasteward.core.data
 
-object command {
-  val stewardUpdates = "show stewardUpdates"
-  val stewardDependencies = "show stewardDependencies"
-  val reloadPlugins = "reload plugins"
-  val scalafix = "scalafix"
-  val testScalafix = "test:scalafix"
-  val scalafixEnable = "scalafixEnable"
+import org.http4s.Uri
+
+sealed trait ReleaseRelatedUrl {
+  def url: Uri
+}
+
+object ReleaseRelatedUrl {
+  final case class CustomChangelog(url: Uri) extends ReleaseRelatedUrl
+  final case class CustomReleaseNotes(url: Uri) extends ReleaseRelatedUrl
+  final case class GitHubReleaseNotes(url: Uri) extends ReleaseRelatedUrl
+  final case class VersionDiff(url: Uri) extends ReleaseRelatedUrl
 }

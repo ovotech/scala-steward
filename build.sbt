@@ -28,6 +28,7 @@ lazy val core = myCrossProject("core")
     libraryDependencies ++= Seq(
       compilerPlugin(Dependencies.betterMonadicFor),
       compilerPlugin(Dependencies.kindProjector.cross(CrossVersion.full)),
+      Dependencies.attoCore,
       Dependencies.betterFiles,
       Dependencies.caseApp,
       Dependencies.catsEffect,
@@ -39,6 +40,7 @@ lazy val core = myCrossProject("core")
       Dependencies.commonsIo,
       Dependencies.coursierCore,
       Dependencies.coursierCatsInterop,
+      Dependencies.cron4sCore,
       Dependencies.fs2Core,
       Dependencies.http4sAsyncHttpClient,
       Dependencies.http4sCirce,
@@ -67,12 +69,23 @@ lazy val core = myCrossProject("core")
         case PathList(ps @ _*) if ps.last == "io.netty.versions.properties" =>
           // This is included in Netty JARs which are pulled in by http4s-async-http-client.
           MergeStrategy.first
+        case PathList("org", "fusesource", _*) =>
+          // (core / assembly) deduplicate: different file contents found in the following:
+          // https/repo1.maven.org/maven2/jline/jline/2.14.6/jline-2.14.6.jar:org/fusesource/hawtjni/runtime/Callback.class
+          // https/repo1.maven.org/maven2/org/fusesource/jansi/jansi/1.18/jansi-1.18.jar:org/fusesource/hawtjni/runtime/Callback.class
+          MergeStrategy.first
         case otherwise =>
           val defaultStrategy = (assemblyMergeStrategy in assembly).value
           defaultStrategy(otherwise)
       }
     },
-    buildInfoKeys := Seq[BuildInfoKey](version, scalaVersion, scalaBinaryVersion, sbtVersion),
+    buildInfoKeys := Seq[BuildInfoKey](
+      version,
+      scalaVersion,
+      scalaBinaryVersion,
+      sbtVersion,
+      BuildInfoKey.map(git.gitHeadCommit) { case (k, v) => k -> v.getOrElse("master") }
+    ),
     buildInfoPackage := moduleRootPkg.value,
     initialCommands += s"""
       import ${moduleRootPkg.value}._
@@ -102,8 +115,8 @@ lazy val core = myCrossProject("core")
 lazy val plugin = myCrossProject("plugin")
   .settings(noPublishSettings)
   .settings(
+    scalaVersion := "2.12.11",
     sbtPlugin := true,
-    addSbtPlugin("com.timushev.sbt" % "sbt-updates" % "0.5.0"),
     Compile / compile / wartremoverErrors -= Wart.Equals
   )
 
@@ -152,7 +165,7 @@ lazy val metadataSettings = Def.settings(
   scmInfo := Some(
     ScmInfo(homepage.value.get, s"scm:git:https://github.com/$gitHubOwner/$projectName.git")
   ),
-  headerLicense := Some(HeaderLicense.ALv2("2018-2019", "Scala Steward contributors")),
+  headerLicense := Some(HeaderLicense.ALv2("2018-2020", "Scala Steward contributors")),
   developers := List(
     Developer(
       id = "fthomas",
@@ -164,36 +177,27 @@ lazy val metadataSettings = Def.settings(
 )
 
 lazy val dockerSettings = Def.settings(
-  dockerCommands := Seq(
-    Cmd("FROM", Option(System.getenv("DOCKER_BASE_IMAGE")).getOrElse("openjdk:8")),
-    Cmd("ARG", "DEBIAN_FRONTEND=noninteractive"),
-    ExecCmd("RUN", "apt-get", "update"),
-    ExecCmd("RUN", "apt-get", "install", "-y", "apt-transport-https", "firejail"),
-    ExecCmd(
-      "RUN",
-      "sh",
-      "-c",
-      """echo \"deb https://dl.bintray.com/sbt/debian /\" | tee -a /etc/apt/sources.list.d/sbt.list"""
-    ),
-    ExecCmd(
-      "RUN",
-      "apt-key",
-      "adv",
-      "--keyserver",
-      "hkp://keyserver.ubuntu.com:80",
-      "--recv",
-      "2EE0EA64E40A89B84B2DF73499E82A75642AC823"
-    ),
-    ExecCmd("RUN", "apt-get", "update"),
-    ExecCmd("RUN", "apt-get", "install", "-y", "sbt"),
-    Cmd("WORKDIR", "/opt/docker"),
-    Cmd("ADD", "opt", "/opt"),
-    ExecCmd("RUN", "chmod", "0755", "/opt/docker/bin/scala-steward"),
-    ExecCmd("ENTRYPOINT", "/opt/docker/bin/scala-steward"),
-    ExecCmd("CMD", "")
-  ),
+  dockerBaseImage := Option(System.getenv("DOCKER_BASE_IMAGE")).getOrElse("openjdk:8-jre-alpine"),
+  dockerCommands ++= {
+    val getSbtVersion = sbtVersion.value
+    val sbtTgz = s"sbt-$getSbtVersion.tgz"
+    val sbtUrl = s"https://github.com/sbt/sbt/releases/download/v$getSbtVersion/$sbtTgz"
+    Seq(
+      Cmd("USER", "root"),
+      Cmd(
+        "RUN",
+        s"apk --no-cache add bash shadow git ca-certificates maven && wget $sbtUrl && tar -xf $sbtTgz && rm -f $sbtTgz"
+      ),
+      Cmd("RUN", "usermod -d /opt/scala-steward daemon"),
+      Cmd("USER", "daemon")
+    )
+  },
   Docker / packageName := name.value,
   dockerUpdateLatest := true,
+  dockerEntrypoint += "--disable-sandbox",
+  dockerEnvVars := Map("PATH" -> "/opt/docker/sbt/bin:${PATH}"),
+  daemonUserUid in Docker := None,
+  daemonUser in Docker := "daemon",
   dockerRepository := sys.env.get("AWS_ECR_URI")
 )
 
@@ -201,7 +205,18 @@ lazy val noPublishSettings = Def.settings(
   skip in publish := true
 )
 
-lazy val scaladocSettings = Def.settings()
+lazy val scaladocSettings = Def.settings(
+  Compile / doc / scalacOptions ++= {
+    val tag = s"v${version.value}"
+    val tree = if (isSnapshot.value) git.gitHeadCommit.value.getOrElse("master") else tag
+    Seq(
+      "-doc-source-url",
+      s"${scmInfo.value.get.browseUrl}/blob/${tree}€{FILE_PATH}.scala",
+      "-sourcepath",
+      (LocalRootProject / baseDirectory).value.getAbsolutePath
+    )
+  }
+)
 
 /// setting keys
 
@@ -215,6 +230,29 @@ installPlugin := {
 
 lazy val moduleRootPkg = settingKey[String]("")
 moduleRootPkg := rootPkg
+
+// Run Scala Steward from sbt for development and testing.
+// Do not do this in production.
+lazy val runSteward = taskKey[Unit]("")
+runSteward := Def.taskDyn {
+  val home = System.getenv("HOME")
+  val myJavaHome = System.getenv("JAVA_HOME")
+  val projectDir = (LocalRootProject / baseDirectory).value
+  val args = Seq(
+    Seq("--workspace", s"$projectDir/workspace"),
+    Seq("--repos-file", s"$projectDir/repos.md"),
+    Seq("--git-author-email", s"me@$projectName.org"),
+    Seq("--vcs-login", projectName),
+    Seq("--git-ask-pass", s"$home/.github/askpass/$projectName.sh"),
+    Seq("--whitelist", s"$home/.cache/coursier"),
+    Seq("--whitelist", s"$home/.cache/JNA"),
+    Seq("--whitelist", s"$home/.ivy2"),
+    Seq("--whitelist", s"$home/.sbt"),
+    Seq("--whitelist", myJavaHome),
+    Seq("--read-only", myJavaHome)
+  ).flatten.mkString(" ", " ", "")
+  (core.jvm / Compile / run).toTask(args)
+}.value
 
 /// commands
 
@@ -249,26 +287,4 @@ addCommandsAlias(
     "test:scalafmt",
     "scalafmtSbt"
   )
-)
-
-// Run Scala Steward from sbt for development and testing.
-// Do not do this in production.
-addCommandAlias(
-  "runSteward", {
-    val home = System.getenv("HOME")
-    val projectDir = s"$home/code/scala-steward/core"
-    Seq(
-      Seq("core/run"),
-      Seq("--workspace", s"$projectDir/workspace"),
-      Seq("--repos-file", s"$projectDir/repos.md"),
-      Seq("--git-author-email", s"me@$projectName.org"),
-      Seq("--vcs-login", projectName),
-      Seq("--git-ask-pass", s"$home/.github/askpass/$projectName.sh"),
-      Seq("--whitelist", s"$home/.cache/coursier"),
-      Seq("--whitelist", s"$home/.coursier"),
-      Seq("--whitelist", s"$home/.ivy2"),
-      Seq("--whitelist", s"$home/.sbt"),
-      Seq("--prune-repos=true")
-    ).flatten.mkString(" ")
-  }
 )

@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +21,8 @@ import io.circe.Decoder
 final private[http4s] case class Page[A](values: List[A])
 
 private[http4s] object Page {
-  implicit def pageDecoder[A: Decoder]: Decoder[Page[A]] = Decoder.instance { c =>
-    c.downField("values").as[List[A]].map(Page(_))
-  }
+  implicit def pageDecoder[A: Decoder]: Decoder[Page[A]] =
+    Decoder.instance { c =>
+      c.downField("values").as[List[A]].map(Page(_))
+    }
 }

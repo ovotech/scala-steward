@@ -1,43 +1,25 @@
 package org.scalasteward.core.update
 
-import org.scalasteward.core.data.{Dependency, GroupId, Update}
-import org.scalasteward.core.mock.MockContext._
-import org.scalasteward.core.mock.MockState
+import org.scalasteward.core.TestSyntax._
+import org.scalasteward.core.data.{ArtifactId, Update}
 import org.scalasteward.core.util.Nel
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
 class UpdateAlgTest extends AnyFunSuite with Matchers {
-  test("findUpdateUnderNewGroup: returns empty if dep is not listed") {
-    val original = Dependency(GroupId("org.spire-math"), "UNKNOWN", "_2.12", "1.0.0")
-    UpdateAlg.findUpdateUnderNewGroup(original) shouldBe None
-  }
 
-  test("findUpdateUnderNewGroup: returns Update.Single for updateing groupId") {
-    val original = Dependency(GroupId("org.spire-math"), "kind-projector", "_2.12", "0.9.0")
-    UpdateAlg.findUpdateUnderNewGroup(original) shouldBe Some(
-      Update.Single(
-        GroupId("org.spire-math"),
-        "kind-projector",
-        "0.9.0",
-        Nel.of("0.10.0"),
-        newerGroupId = Some(GroupId("org.typelevel"))
-      )
+  test("isUpdateFor") {
+    val dependency = "io.circe" % ArtifactId("circe-refined", "circe-refined_2.12") % "0.11.2"
+    val update = Update.Group(
+      Nel.of(
+        "io.circe" % ArtifactId("circe-core", "circe-core_2.12") % "0.11.2",
+        "io.circe" % Nel.of(
+          ArtifactId("circe-refined", "circe-refined_2.12"),
+          ArtifactId("circe-refined", "circe-refined_sjs0.6_2.12")
+        ) % "0.11.2"
+      ),
+      Nel.of("0.12.3")
     )
-  }
-
-  test("findUpdate: newer groupId") {
-    val dependency =
-      Dependency(GroupId("org.spire-math"), "kind-projector", "kind-projector_2.12", "0.9.10")
-    val expected = Update.Single(
-      GroupId("org.spire-math"),
-      "kind-projector",
-      "0.9.10",
-      Nel.of("0.10.0"),
-      newerGroupId = Some(GroupId("org.typelevel"))
-    )
-
-    val actual = updateAlg.findUpdate(dependency).runA(MockState.empty).unsafeRunSync()
-    actual shouldBe Some(expected)
+    UpdateAlg.isUpdateFor(update, dependency) shouldBe true
   }
 }

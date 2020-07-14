@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,16 +14,17 @@
  * limitations under the License.
  */
 
-package org.scalasteward.core.sbt.data
+package org.scalasteward.core.buildtool
 
-import io.circe.{Decoder, Encoder}
+import org.scalasteward.core.data.Scope
+import org.scalasteward.core.scalafix.Migration
+import org.scalasteward.core.util.Nel
+import org.scalasteward.core.vcs.data.Repo
 
-final case class ScalaVersion(value: String)
+trait BuildToolAlg[F[_]] {
+  def containsBuild(repo: Repo): F[Boolean]
 
-object ScalaVersion {
-  implicit val scalaVersionDecoder: Decoder[ScalaVersion] =
-    Decoder[String].map(ScalaVersion.apply)
+  def getDependencies(repo: Repo): F[List[Scope.Dependencies]]
 
-  implicit val scalaVersionEncoder: Encoder[ScalaVersion] =
-    Encoder[String].contramap(_.value)
+  def runMigrations(repo: Repo, migrations: Nel[Migration]): F[Unit]
 }

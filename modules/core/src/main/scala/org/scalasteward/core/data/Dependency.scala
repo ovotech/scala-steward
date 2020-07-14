@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,15 +16,15 @@
 
 package org.scalasteward.core.data
 
+import cats.Order
+import cats.implicits._
+import io.circe.Codec
 import io.circe.generic.semiauto._
-import io.circe.{Decoder, Encoder}
-import org.scalasteward.core.sbt.data.{SbtVersion, ScalaVersion}
-import org.scalasteward.core.util.Nel
+import org.scalasteward.core.buildtool.sbt.data.{SbtVersion, ScalaVersion}
 
 final case class Dependency(
     groupId: GroupId,
-    artifactId: String,
-    artifactIdCross: String,
+    artifactId: ArtifactId,
     version: String,
     sbtVersion: Option[SbtVersion] = None,
     scalaVersion: Option[ScalaVersion] = None,
@@ -33,15 +33,14 @@ final case class Dependency(
   def attributes: Map[String, String] =
     sbtVersion.map("sbtVersion" -> _.value).toMap ++
       scalaVersion.map("scalaVersion" -> _.value).toMap
-
-  def toUpdate: Update.Single =
-    Update.Single(groupId, artifactId, version, Nel.of(version), configurations)
 }
 
 object Dependency {
-  implicit val dependencyDecoder: Decoder[Dependency] =
-    deriveDecoder
+  implicit val dependencyCodec: Codec[Dependency] =
+    deriveCodec
 
-  implicit val dependencyEncoder: Encoder[Dependency] =
-    deriveEncoder
+  implicit val dependencyOrder: Order[Dependency] =
+    Order.by { d: Dependency =>
+      (d.groupId, d.artifactId, d.version, d.sbtVersion, d.scalaVersion, d.configurations)
+    }
 }

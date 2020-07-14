@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2019 Scala Steward contributors
+ * Copyright 2018-2020 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,19 +19,15 @@ package org.scalasteward.core.update
 import cats.implicits._
 import cats.{Monad, TraverseFilter}
 import io.chrisdavenport.log4cats.Logger
-import org.scalasteward.core.data.{GroupId, Update, Version}
+import org.scalasteward.core.data._
 import org.scalasteward.core.repoconfig.RepoConfig
 import org.scalasteward.core.update.FilterAlg._
 import org.scalasteward.core.util.Nel
 
-final class FilterAlg[F[_]](
-    implicit
+final class FilterAlg[F[_]](implicit
     logger: Logger[F],
     F: Monad[F]
 ) {
-  def globalFilterOne(update: Update.Single): F[Option[Update.Single]] =
-    logIfRejected(globalFilter(update))
-
   def localFilterMany[G[_]: TraverseFilter](
       config: RepoConfig,
       updates: G[Update.Single]
@@ -42,7 +38,7 @@ final class FilterAlg[F[_]](
     result match {
       case Right(update) => F.pure(update.some)
       case Left(reason) =>
-        logger.info(s"Ignore ${reason.update.show} (reason: ${reason.show})") *> F.pure(None)
+        logger.info(s"Ignore ${reason.update.show} (reason: ${reason.show})").as(None)
     }
 }
 
@@ -51,48 +47,56 @@ object FilterAlg {
 
   sealed trait RejectionReason {
     def update: Update.Single
-    def show: String = this match {
-      case IgnoredGlobally(_)       => "ignored globally"
-      case IgnoredByConfig(_)       => "ignored by config"
-      case NotAllowedByConfig(_)    => "not allowed by config"
-      case BadVersions(_)           => "bad versions"
-      case NoSuitableNextVersion(_) => "no suitable next version"
-    }
+    def show: String =
+      this match {
+        case IgnoredByConfig(_)         => "ignored by config"
+        case VersionPinnedByConfig(_)   => "version is pinned by config"
+        case NotAllowedByConfig(_)      => "not allowed by config"
+        case BadVersions(_)             => "bad versions"
+        case NoSuitableNextVersion(_)   => "no suitable next version"
+        case VersionOrderingConflict(_) => "version ordering conflict"
+      }
   }
 
-  final case class IgnoredGlobally(update: Update.Single) extends RejectionReason
   final case class IgnoredByConfig(update: Update.Single) extends RejectionReason
+  final case class VersionPinnedByConfig(update: Update.Single) extends RejectionReason
   final case class NotAllowedByConfig(update: Update.Single) extends RejectionReason
   final case class BadVersions(update: Update.Single) extends RejectionReason
   final case class NoSuitableNextVersion(update: Update.Single) extends RejectionReason
+  final case class VersionOrderingConflict(update: Update.Single) extends RejectionReason
 
   def globalFilter(update: Update.Single): FilterResult =
     removeBadVersions(update)
-      .flatMap(isIgnoredGlobally)
       .flatMap(selectSuitableNextVersion)
+      .flatMap(checkVersionOrdering)
 
-  def localFilter(update: Update.Single, repoConfig: RepoConfig): FilterResult =
-    globalFilter(update).flatMap(repoConfig.updates.keep)
+  private def localFilter(update: Update.Single, repoConfig: RepoConfig): FilterResult =
+    repoConfig.updates.keep(update).flatMap(globalFilter)
 
-  def isIgnoredGlobally(update: Update.Single): FilterResult = {
-    val keep = ((update.groupId.value, update.artifactId) match {
-      case ("org.scala-lang", "scala-compiler") => false
-      case ("org.scala-lang", "scala-library")  => false
-      case ("org.scala-lang", "scala-reflect")  => false
-      case ("org.typelevel", "scala-library")   => false
-      case _                                    => true
-    }) && (update.configurations.fold("")(_.toLowerCase) match {
-      case "phantom-js-jetty"    => false
-      case "scalafmt"            => false
-      case "scripted-sbt"        => false
-      case "scripted-sbt-launch" => false
-      case "tut"                 => false
-      case _                     => true
+  def isScalaDependency(dependency: Dependency): Boolean =
+    (dependency.groupId.value, dependency.artifactId.name) match {
+      case ("org.scala-lang", "scala-compiler") => true
+      case ("org.scala-lang", "scala-library")  => true
+      case ("org.scala-lang", "scala-reflect")  => true
+      case ("org.scala-lang", "scalap")         => true
+      case ("org.typelevel", "scala-library")   => true
+      case _                                    => false
+    }
+
+  def isScalaDependencyIgnored(dependency: Dependency, ignoreScalaDependency: Boolean): Boolean =
+    ignoreScalaDependency && isScalaDependency(dependency)
+
+  def isDependencyConfigurationIgnored(dependency: Dependency): Boolean =
+    (dependency.configurations.fold("")(_.toLowerCase) match {
+      case "phantom-js-jetty"    => true
+      case "scalafmt"            => true
+      case "scripted-sbt"        => true
+      case "scripted-sbt-launch" => true
+      case "tut"                 => true
+      case _                     => false
     })
-    if (keep) Right(update) else Left(IgnoredGlobally(update))
-  }
 
-  def selectSuitableNextVersion(update: Update.Single): FilterResult = {
+  private def selectSuitableNextVersion(update: Update.Single): FilterResult = {
     val newerVersions = update.newerVersions.map(Version.apply).toList
     val maybeNext = Version(update.currentVersion).selectNext(newerVersions)
     maybeNext match {
@@ -101,15 +105,33 @@ object FilterAlg {
     }
   }
 
-  def removeBadVersions(update: Update.Single): FilterResult =
+  private def checkVersionOrdering(update: Update.Single): FilterResult = {
+    val (current, next) =
+      (coursier.core.Version(update.currentVersion), coursier.core.Version(update.nextVersion))
+    if (current > next) Left(VersionOrderingConflict(update)) else Right(update)
+  }
+
+  private def removeBadVersions(update: Update.Single): FilterResult =
     update.newerVersions
       .filterNot(badVersions(update.groupId, update.artifactId))
       .toNel
       .map(versions => update.copy(newerVersions = versions))
       .fold[FilterResult](Left(BadVersions(update)))(Right.apply)
 
-  private def badVersions(groupId: GroupId, artifactId: String): String => Boolean =
-    (groupId.value, artifactId) match {
+  private def badVersions(groupId: GroupId, artifactId: ArtifactId): String => Boolean =
+    (groupId.value, artifactId.name) match {
+      case ("com.google.guava", "guava") =>
+        List("r03", "r05", "r06", "r07", "r08", "r09").contains
+      case ("com.nequissimus", "sort-imports") =>
+        List(
+          // https://github.com/beautiful-scala/sbt-scalastyle/pull/13
+          "36845576"
+        ).contains
+      case ("com.nequissimus", "sort-imports_2.12") =>
+        List(
+          // https://github.com/fthomas/scala-steward/issues/1413
+          "36845576"
+        ).contains
       case ("commons-collections", "commons-collections") =>
         List(
           "20030418.083655",
@@ -143,6 +165,7 @@ object FilterAlg {
           // https://github.com/scala-js/scala-js/issues/3865
           "0.6.30"
         ).contains
-      case _ => _ => false
+      case _ =>
+        _ => false
     }
 }

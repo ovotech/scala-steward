@@ -8,7 +8,8 @@ import org.http4s.circe._
 import org.http4s.client.Client
 import org.http4s.dsl.io._
 import org.http4s.implicits._
-import org.scalasteward.core.data.{GroupId, Update}
+import org.scalasteward.core.TestSyntax._
+import org.scalasteward.core.data.Update
 import org.scalasteward.core.git.{Branch, Sha1}
 import org.scalasteward.core.mock.MockContext.{config, user}
 import org.scalasteward.core.nurture.UpdateData
@@ -50,7 +51,7 @@ class Http4sGitlabApiAlgTest extends AnyFunSuite with Matchers {
     Repo("foo", "bar"),
     Repo("scala-steward", "bar"),
     RepoConfig(),
-    Update.Single(GroupId("ch.qos.logback"), "logback-classic", "1.2.0", Nel.of("1.2.3")),
+    Update.Single("ch.qos.logback" % "logback-classic" % "1.2.0", Nel.of("1.2.3")),
     Branch("master"),
     Sha1(Sha1.HexString("d6b6791d2ea11df1d156fe70979ab8c3a5ba3433")),
     Branch("update/logback-classic-1.2.3")
@@ -184,7 +185,7 @@ class Http4sGitlabApiAlgTest extends AnyFunSuite with Matchers {
         "last_activity_at": "2019-05-20T04:31:10.797Z",
         "namespace": {
           "id": 5239389,
-          "name": "foo",
+          "name": "foo description",
           "path": "foo",
           "kind": "user",
           "full_path": "foo",
