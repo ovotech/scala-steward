@@ -188,16 +188,15 @@ lazy val dockerSettings = Def.settings(
         "RUN",
         s"apk --no-cache add bash shadow git ca-certificates maven && wget $sbtUrl && tar -xf $sbtTgz && rm -f $sbtTgz"
       ),
-      Cmd("RUN", "usermod -d /opt/scala-steward daemon"),
-      Cmd("USER", "daemon")
+      Cmd("RUN", "addgroup -g 1002 scala-steward"),
+      Cmd("RUN", "usermod -d /opt/scala-steward -aG 1002 demiourgos728"),
+      Cmd("USER", "demiourgos728")
     )
   },
   Docker / packageName := name.value,
   dockerUpdateLatest := true,
   dockerEntrypoint += "--disable-sandbox",
   dockerEnvVars := Map("PATH" -> "/opt/docker/sbt/bin:${PATH}"),
-  daemonUserUid in Docker := None,
-  daemonUser in Docker := "daemon",
   dockerRepository := sys.env.get("AWS_ECR_URI")
 )
 
