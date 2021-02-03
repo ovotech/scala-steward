@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2020 Scala Steward contributors
+ * Copyright 2018-2021 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,8 @@
 
 package org.scalasteward.core.update
 
-import cats.{Eval, Monad}
-import cats.implicits._
+import cats.Monad
+import cats.syntax.all._
 import org.scalasteward.core.coursier.VersionsCache
 import org.scalasteward.core.data._
 import org.scalasteward.core.repoconfig.RepoConfig
@@ -27,7 +27,7 @@ import scala.concurrent.duration.FiniteDuration
 final class UpdateAlg[F[_]](implicit
     filterAlg: FilterAlg[F],
     versionsCache: VersionsCache[F],
-    groupMigrations: GroupMigrations,
+    artifactMigrations: ArtifactMigrations,
     F: Monad[F]
 ) {
   def findUpdate(
@@ -38,12 +38,11 @@ final class UpdateAlg[F[_]](implicit
       versions <- versionsCache.getVersions(dependency, maxAge)
       current = Version(dependency.value.version)
       maybeNewerVersions = Nel.fromList(versions.filter(_ > current))
-      maybeUpdate0 = maybeNewerVersions.map { newerVersions =>
-        Update.Single(CrossDependency(dependency.value), newerVersions.map(_.value))
-      }
-      migratedUpdate = Eval.later(groupMigrations.findUpdateWithNewerGroupId(dependency.value))
-      maybeUpdate1 = maybeUpdate0.orElse(migratedUpdate.value)
-    } yield maybeUpdate1
+      maybeUpdate = maybeNewerVersions
+        .map(vs => Update.Single(CrossDependency(dependency.value), vs.map(_.value)))
+        .orElse(artifactMigrations.findUpdateWithRenamedArtifact(dependency.value))
+    } yield maybeUpdate
+
   def findUpdates(
       dependencies: List[Scope.Dependency],
       repoConfig: RepoConfig,

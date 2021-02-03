@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2020 Scala Steward contributors
+ * Copyright 2018-2021 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +21,6 @@ import cats.implicits._
 import cats.{Applicative, Parallel}
 import coursier.cache.{CachePolicy, FileCache}
 import coursier.core.{Authentication, Project}
-import coursier.interop.cats._
 import coursier.{Fetch, Info, Module, ModuleName, Organization}
 import io.chrisdavenport.log4cats.Logger
 import org.http4s.Uri
@@ -51,6 +50,8 @@ object CoursierAlg {
       F: Sync[F]
   ): CoursierAlg[F] = {
     implicit val parallel: Parallel.Aux[F, F] = Parallel.identity[F]
+    implicit val coursierSync: coursier.util.Sync[F] =
+      coursier.interop.cats.coursierSyncFromCats(F, parallel, contextShift)
 
     val fetch: Fetch[F] = Fetch[F](FileCache[F]())
 
@@ -92,7 +93,7 @@ object CoursierAlg {
             logger.error(message) >> F.raiseError(new Throwable(message))
           case Right(repository) =>
             val module = toCoursierModule(dependency)
-            repository.versions(module, cacheNoTtl.fetch)(coursierMonadFromCats(F)).run.flatMap {
+            repository.versions(module, cacheNoTtl.fetch).run.flatMap {
               case Left(message)        => F.raiseError(new Throwable(message))
               case Right((versions, _)) => F.pure(versions.available.map(Version.apply).sorted)
             }
@@ -136,9 +137,8 @@ object CoursierAlg {
     Authentication(credentials.user, credentials.pass)
 
   private def getParentDependency(project: Project): Option[coursier.Dependency] =
-    project.parent.map {
-      case (module, version) =>
-        coursier.Dependency(module, version).withTransitive(false)
+    project.parent.map { case (module, version) =>
+      coursier.Dependency(module, version).withTransitive(false)
     }
 
   private def getScmUrlOrHomePage(info: Info): Option[Uri] =

@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2020 Scala Steward contributors
+ * Copyright 2018-2021 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,22 +16,19 @@
 
 package org.scalasteward.core.repocache
 
-import cats.Parallel
-import cats.implicits._
+import cats.syntax.all._
+import cats.{MonadThrow, Parallel}
 import io.chrisdavenport.log4cats.Logger
 import org.scalasteward.core.application.Config
 import org.scalasteward.core.buildtool.BuildToolDispatcher
 import org.scalasteward.core.data.{Dependency, DependencyInfo}
 import org.scalasteward.core.git.GitAlg
 import org.scalasteward.core.repoconfig.RepoConfigAlg
-import org.scalasteward.core.util.MonadThrowable
-import org.scalasteward.core.util.logger.LoggerOps
 import org.scalasteward.core.vcs.data.{Repo, RepoOut}
 import org.scalasteward.core.vcs.{VCSApiAlg, VCSRepoAlg}
 
-final class RepoCacheAlg[F[_]](implicit
+final class RepoCacheAlg[F[_]](config: Config)(implicit
     buildToolDispatcher: BuildToolDispatcher[F],
-    config: Config,
     gitAlg: GitAlg[F],
     logger: Logger[F],
     parallel: Parallel[F],
@@ -40,39 +37,32 @@ final class RepoCacheAlg[F[_]](implicit
     repoConfigAlg: RepoConfigAlg[F],
     vcsApiAlg: VCSApiAlg[F],
     vcsRepoAlg: VCSRepoAlg[F],
-    F: MonadThrowable[F]
+    F: MonadThrow[F]
 ) {
-  def checkCache(repo: Repo): F[Unit] =
-    logger.attemptLog_(s"Check cache of ${repo.show}") {
-      F.ifM(refreshErrorAlg.failedRecently(repo))(
-        logger.info(s"Skipping due to previous error"),
+  def checkCache(repo: Repo): F[(RepoCache, RepoOut)] =
+    logger.info(s"Check cache of ${repo.show}") >>
+      refreshErrorAlg.skipIfFailedRecently(repo) {
         for {
-          ((repoOut, branchOut), cachedSha1) <- (
-              vcsApiAlg.createForkOrGetRepoWithDefaultBranch(config, repo),
-              repoCacheRepository.findSha1(repo)
+          ((repoOut, branchOut), maybeCache) <- (
+            vcsApiAlg.createForkOrGetRepoWithDefaultBranch(repo, config.doNotFork),
+            repoCacheRepository.findCache(repo)
           ).parTupled
           latestSha1 = branchOut.commit.sha
-          refreshRequired = cachedSha1.forall(_ =!= latestSha1)
-          _ <- if (refreshRequired) cloneAndRefreshCache(repo, repoOut) else F.unit
-        } yield ()
-      )
-    }
+          cache <- maybeCache
+            .filter(_.sha1 === latestSha1)
+            .fold(cloneAndRefreshCache(repo, repoOut))(F.pure)
+        } yield (cache, repoOut)
+      }
 
-  private def cloneAndRefreshCache(repo: Repo, repoOut: RepoOut): F[Unit] =
+  private def cloneAndRefreshCache(repo: Repo, repoOut: RepoOut): F[RepoCache] =
+    vcsRepoAlg.cloneAndSync(repo, repoOut) >> refreshCache(repo)
+
+  private def refreshCache(repo: Repo): F[RepoCache] =
     for {
       _ <- logger.info(s"Refresh cache of ${repo.show}")
-      _ <- vcsRepoAlg.clone(repo, repoOut)
-      _ <- vcsRepoAlg.syncFork(repo, repoOut)
-      _ <- refreshCache(repo)
-    } yield ()
-
-  private def refreshCache(repo: Repo): F[Unit] =
-    computeCache(repo).attempt.flatMap {
-      case Right(cache) =>
-        repoCacheRepository.updateCache(repo, cache)
-      case Left(throwable) =>
-        refreshErrorAlg.persistError(repo, throwable) >> F.raiseError(throwable)
-    }
+      cache <- refreshErrorAlg.persistError(repo)(computeCache(repo))
+      _ <- repoCacheRepository.updateCache(repo, cache)
+    } yield cache
 
   private def computeCache(repo: Repo): F[RepoCache] =
     for {

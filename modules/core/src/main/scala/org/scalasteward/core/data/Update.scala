@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2020 Scala Steward contributors
+ * Copyright 2018-2021 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -53,13 +53,21 @@ sealed trait Update extends Product with Serializable {
     }
     s"$groupId:$artifacts : $versions"
   }
+
+  def withNewerVersions(versions: Nel[String]): Update = this match {
+    case s @ Single(_, _, _, _) =>
+      s.copy(newerVersions = versions)
+    case g @ Group(_, _) =>
+      g.copy(newerVersions = versions)
+  }
 }
 
 object Update {
   final case class Single(
       crossDependency: CrossDependency,
       newerVersions: Nel[String],
-      newerGroupId: Option[GroupId] = None
+      newerGroupId: Option[GroupId] = None,
+      newerArtifactId: Option[String] = None
   ) extends Update {
     override def crossDependencies: Nel[CrossDependency] =
       Nel.one(crossDependency)

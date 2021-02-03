@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2020 Scala Steward contributors
+ * Copyright 2018-2021 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,9 +17,10 @@
 package org.scalasteward.core.buildtool.sbt
 
 import better.files.File
+import cats.Functor
 import cats.data.OptionT
-import cats.implicits._
-import cats.{Functor, Monad}
+import cats.effect.BracketThrow
+import cats.syntax.all._
 import io.chrisdavenport.log4cats.Logger
 import org.scalasteward.core.application.Config
 import org.scalasteward.core.buildtool.BuildToolAlg
@@ -28,30 +29,27 @@ import org.scalasteward.core.buildtool.sbt.data.SbtVersion
 import org.scalasteward.core.data.{Dependency, Resolver, Scope}
 import org.scalasteward.core.io.{FileAlg, FileData, ProcessAlg, WorkspaceAlg}
 import org.scalasteward.core.scalafix.Migration
-import org.scalasteward.core.scalafmt.ScalafmtAlg
 import org.scalasteward.core.util.Nel
-import org.scalasteward.core.vcs.data.Repo
+import org.scalasteward.core.vcs.data.BuildRoot
 
-trait SbtAlg[F[_]] extends BuildToolAlg[F] {
+trait SbtAlg[F[_]] extends BuildToolAlg[F, BuildRoot] {
   def addGlobalPluginTemporarily[A](plugin: FileData)(fa: F[A]): F[A]
 
   def addGlobalPlugins[A](fa: F[A]): F[A]
 
-  def getSbtVersion(repo: Repo): F[Option[SbtVersion]]
+  def getSbtVersion(buildRoot: BuildRoot): F[Option[SbtVersion]]
 
-  final def getSbtDependency(repo: Repo)(implicit F: Functor[F]): F[Option[Dependency]] =
-    OptionT(getSbtVersion(repo)).subflatMap(sbtDependency).value
+  final def getSbtDependency(buildRoot: BuildRoot)(implicit F: Functor[F]): F[Option[Dependency]] =
+    OptionT(getSbtVersion(buildRoot)).subflatMap(sbtDependency).value
 }
 
 object SbtAlg {
-  def create[F[_]](implicit
-      config: Config,
+  def create[F[_]](config: Config)(implicit
       fileAlg: FileAlg[F],
       logger: Logger[F],
       processAlg: ProcessAlg[F],
-      scalafmtAlg: ScalafmtAlg[F],
       workspaceAlg: WorkspaceAlg[F],
-      F: Monad[F]
+      F: BracketThrow[F]
   ): SbtAlg[F] =
     new SbtAlg[F] {
       override def addGlobalPluginTemporarily[A](plugin: FileData)(fa: F[A]): F[A] =
@@ -68,53 +66,57 @@ object SbtAlg {
         logger.info("Add global sbt plugins") >>
           stewardPlugin.flatMap(addGlobalPluginTemporarily(_)(fa))
 
-      override def containsBuild(repo: Repo): F[Boolean] =
-        workspaceAlg.repoDir(repo).flatMap(repoDir => fileAlg.isRegularFile(repoDir / "build.sbt"))
+      override def containsBuild(buildRoot: BuildRoot): F[Boolean] =
+        workspaceAlg
+          .buildRootDir(buildRoot)
+          .flatMap(buildRootDir => fileAlg.isRegularFile(buildRootDir / "build.sbt"))
 
-      override def getSbtVersion(repo: Repo): F[Option[SbtVersion]] =
+      override def getSbtVersion(buildRoot: BuildRoot): F[Option[SbtVersion]] =
         for {
-          repoDir <- workspaceAlg.repoDir(repo)
-          maybeProperties <- fileAlg.readFile(repoDir / "project" / "build.properties")
+          buildRootDir <- workspaceAlg.buildRootDir(buildRoot)
+          maybeProperties <- fileAlg.readFile(
+            buildRootDir / "project" / "build.properties"
+          )
           version = maybeProperties.flatMap(parser.parseBuildProperties)
         } yield version
 
-      override def getDependencies(repo: Repo): F[List[Scope.Dependencies]] =
+      override def getDependencies(buildRoot: BuildRoot): F[List[Scope.Dependencies]] =
         for {
-          repoDir <- workspaceAlg.repoDir(repo)
-          commands = List(setOffline, crossStewardDependencies, reloadPlugins, stewardDependencies)
-          lines <- exec(sbtCmd(commands), repoDir)
+          buildRootDir <- workspaceAlg.buildRootDir(buildRoot)
+          commands = Nel.of(crossStewardDependencies, reloadPlugins, stewardDependencies)
+          lines <- sbt(commands, buildRootDir)
           dependencies = parser.parseDependencies(lines)
-          additionalDependencies <- getAdditionalDependencies(repo)
-          // combine scopes with the same resolvers
-          result =
-            (dependencies ++ additionalDependencies)
-              .groupByNel(_.resolvers)
-              .values
-              .toList
-              .map(group => group.head.as(group.reduceMap(_.value).distinct.sorted))
-        } yield result
+          additionalDependencies <- getAdditionalDependencies(buildRoot)
+        } yield additionalDependencies ::: dependencies
 
-      override def runMigrations(repo: Repo, migrations: Nel[Migration]): F[Unit] =
+      override def runMigration(buildRoot: BuildRoot, migration: Migration): F[Unit] =
         addGlobalPluginTemporarily(scalaStewardScalafixSbt) {
-          for {
-            repoDir <- workspaceAlg.repoDir(repo)
-            scalafixCmds = for {
-              migration <- migrations
-              rule <- migration.rewriteRules
-              cmd <- Nel.of(scalafix, testScalafix)
-            } yield s"$cmd $rule"
-            _ <- exec(sbtCmd(scalafixEnable :: scalafixCmds.toList), repoDir)
-          } yield ()
+          workspaceAlg.buildRootDir(buildRoot).flatMap { buildRootDir =>
+            val withScalacOptions =
+              migration.scalacOptions.fold[F[Unit] => F[Unit]](identity) { opts =>
+                val file = scalaStewardScalafixOptions(opts.toList)
+                fileAlg.createTemporarily(buildRootDir / file.name, file.content)(_)
+              }
+            val scalafixCmds = migration.rewriteRules.map(rule => s"$scalafixAll $rule").toList
+            withScalacOptions(sbt(Nel(scalafixEnable, scalafixCmds), buildRootDir).void)
+          }
         }
 
       val sbtDir: F[File] =
         fileAlg.home.map(_ / ".sbt")
 
-      def exec(command: Nel[String], repoDir: File): F[List[String]] =
-        maybeIgnoreOptsFiles(repoDir)(processAlg.execSandboxed(command, repoDir))
-
-      def sbtCmd(commands: List[String]): Nel[String] =
-        Nel.of("sbt", "-batch", "-no-colors", commands.mkString(";", ";", ""))
+      def sbt(sbtCommands: Nel[String], repoDir: File): F[List[String]] =
+        maybeIgnoreOptsFiles(repoDir) {
+          val command =
+            Nel.of(
+              "sbt",
+              "-Dsbt.color=false",
+              "-Dsbt.log.noformat=true",
+              "-Dsbt.supershell=false",
+              sbtCommands.mkString_(";", ";", "")
+            )
+          processAlg.execSandboxed(command, repoDir)
+        }
 
       def maybeIgnoreOptsFiles[A](dir: File)(fa: F[A]): F[A] =
         if (config.ignoreOptsFiles) ignoreOptsFiles(dir)(fa) else fa
@@ -126,13 +128,8 @@ object SbtAlg {
           }
         }
 
-      def getAdditionalDependencies(repo: Repo): F[List[Scope.Dependencies]] =
-        for {
-          maybeSbtDependency <- getSbtDependency(repo)
-          maybeScalafmtDependency <- scalafmtAlg.getScalafmtDependency(repo)
-        } yield Nel
-          .fromList(maybeSbtDependency.toList ++ maybeScalafmtDependency.toList)
-          .map(dependencies => Scope(dependencies.toList, List(Resolver.mavenCentral)))
-          .toList
+      def getAdditionalDependencies(buildRoot: BuildRoot): F[List[Scope.Dependencies]] =
+        getSbtDependency(buildRoot)
+          .map(_.map(dep => Scope(List(dep), List(Resolver.mavenCentral))).toList)
     }
 }

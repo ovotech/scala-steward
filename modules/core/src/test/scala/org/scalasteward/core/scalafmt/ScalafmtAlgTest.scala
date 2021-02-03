@@ -1,15 +1,16 @@
 package org.scalasteward.core.scalafmt
 
+import munit.FunSuite
 import org.scalasteward.core.data.Version
 import org.scalasteward.core.mock.MockContext._
+import org.scalasteward.core.mock.MockContext.context.scalafmtAlg
 import org.scalasteward.core.mock.MockState
-import org.scalasteward.core.vcs.data.Repo
-import org.scalatest.funsuite.AnyFunSuite
-import org.scalatest.matchers.should.Matchers
+import org.scalasteward.core.vcs.data.{BuildRoot, Repo}
 
-class ScalafmtAlgTest extends AnyFunSuite with Matchers {
+class ScalafmtAlgTest extends FunSuite {
   test("getScalafmtVersion on unquoted version") {
     val repo = Repo("fthomas", "scala-steward")
+    val buildRoot = BuildRoot(repo, ".")
     val repoDir = config.workspace / repo.owner / repo.repo
     val scalafmtConf = repoDir / ".scalafmt.conf"
     val initialState = MockState.empty.add(
@@ -19,11 +20,9 @@ class ScalafmtAlgTest extends AnyFunSuite with Matchers {
         |align.openParenCallSite = false
         |""".stripMargin
     )
-    val (state, maybeUpdate) =
-      scalafmtAlg.getScalafmtVersion(repo).run(initialState).unsafeRunSync()
-
-    maybeUpdate shouldBe Some(Version("2.0.0-RC8"))
-    state shouldBe MockState.empty.copy(
+    val (state, maybeVersion) =
+      scalafmtAlg.getScalafmtVersion(buildRoot).run(initialState).unsafeRunSync()
+    val expectedState = MockState.empty.copy(
       commands = Vector(List("read", s"$repoDir/.scalafmt.conf")),
       files = Map(
         scalafmtConf ->
@@ -33,10 +32,14 @@ class ScalafmtAlgTest extends AnyFunSuite with Matchers {
             |""".stripMargin
       )
     )
+
+    assertEquals(maybeVersion, Some(Version("2.0.0-RC8")))
+    assertEquals(state, expectedState)
   }
 
   test("getScalafmtVersion on quoted version") {
     val repo = Repo("fthomas", "scala-steward")
+    val buildRoot = BuildRoot(repo, ".")
     val repoDir = config.workspace / repo.owner / repo.repo
     val scalafmtConf = repoDir / ".scalafmt.conf"
     val initialState = MockState.empty.add(
@@ -46,11 +49,8 @@ class ScalafmtAlgTest extends AnyFunSuite with Matchers {
         |align.openParenCallSite = false
         |""".stripMargin
     )
-    val (_, maybeUpdate) = scalafmtAlg.getScalafmtVersion(repo).run(initialState).unsafeRunSync()
-    maybeUpdate shouldBe Some(Version("2.0.0-RC8"))
-  }
-
-  test("editScalafmtConf") {
-    // Tested in EditAlgTest
+    val (_, maybeVersion) =
+      scalafmtAlg.getScalafmtVersion(buildRoot).run(initialState).unsafeRunSync()
+    assertEquals(maybeVersion, Some(Version("2.0.0-RC8")))
   }
 }

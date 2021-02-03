@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2020 Scala Steward contributors
+ * Copyright 2018-2021 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,13 +18,11 @@ package org.scalasteward.core.buildtool
 
 import org.scalasteward.core.data.Scope
 import org.scalasteward.core.scalafix.Migration
-import org.scalasteward.core.util.Nel
-import org.scalasteward.core.vcs.data.Repo
 
-trait BuildToolAlg[F[_]] {
-  def containsBuild(repo: Repo): F[Boolean]
+trait BuildToolAlg[F[_], R] {
+  def containsBuild(r: R): F[Boolean]
 
-  def getDependencies(repo: Repo): F[List[Scope.Dependencies]]
+  def getDependencies(r: R): F[List[Scope.Dependencies]]
 
-  def runMigrations(repo: Repo, migrations: Nel[Migration]): F[Unit]
+  def runMigration(r: R, migration: Migration): F[Unit]
 }

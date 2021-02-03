@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2020 Scala Steward contributors
+ * Copyright 2018-2021 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,8 +22,8 @@ import cats.implicits._
 import io.chrisdavenport.log4cats.Logger
 import org.scalasteward.core.data._
 import org.scalasteward.core.nurture.PullRequestRepository
-import org.scalasteward.core.repocache.{RepoCache, RepoCacheRepository}
-import org.scalasteward.core.repoconfig.{PullRequestFrequency, RepoConfig, UpdatesConfig}
+import org.scalasteward.core.repocache.RepoCache
+import org.scalasteward.core.repoconfig.{PullRequestFrequency, RepoConfig}
 import org.scalasteward.core.update.PruningAlg._
 import org.scalasteward.core.update.data.UpdateState
 import org.scalasteward.core.update.data.UpdateState._
@@ -37,34 +37,27 @@ final class PruningAlg[F[_]](implicit
     dateTimeAlg: DateTimeAlg[F],
     logger: Logger[F],
     pullRequestRepository: PullRequestRepository[F],
-    repoCacheRepository: RepoCacheRepository[F],
     updateAlg: UpdateAlg[F],
     F: Monad[F]
 ) {
-  def needsAttention(repo: Repo): F[(Boolean, List[Update.Single])] =
-    repoCacheRepository.findCache(repo).flatMap {
-      case None => F.pure((false, List.empty))
-      case Some(repoCache) =>
-        val ignoreScalaDependency =
-          !repoCache.maybeRepoConfig
-            .flatMap(_.updates.includeScala)
-            .getOrElse(UpdatesConfig.defaultIncludeScala)
-        val dependencies = repoCache.dependencyInfos
-          .flatMap(_.sequence)
-          .collect {
-            case info if !ignoreDependency(info.value, ignoreScalaDependency) =>
-              info.map(_.dependency)
-          }
-          .sorted
-        findUpdatesNeedingAttention(repo, repoCache, dependencies)
-    }
+  def needsAttention(data: RepoData): F[(Boolean, List[Update.Single])] = {
+    val ignoreScalaDependency = !data.config.updates.includeScalaOrDefault
+    val dependencies = data.cache.dependencyInfos
+      .flatMap(_.sequence)
+      .collect {
+        case info if !ignoreDependency(info.value, ignoreScalaDependency) => info.map(_.dependency)
+      }
+      .sorted
+    findUpdatesNeedingAttention(data, dependencies)
+  }
 
   private def findUpdatesNeedingAttention(
-      repo: Repo,
-      repoCache: RepoCache,
+      data: RepoData,
       dependencies: List[Scope.Dependency]
   ): F[(Boolean, List[Update.Single])] = {
-    val repoConfig = repoCache.maybeRepoConfig.getOrElse(RepoConfig.default)
+    val repo = data.repo
+    val repoCache = data.cache
+    val repoConfig = data.config
     val depsWithoutResolvers = dependencies.map(_.value).distinct
     for {
       _ <- logger.info(s"Find updates for ${repo.show}")
@@ -119,7 +112,7 @@ final class PruningAlg[F[_]](implicit
     updates.find(UpdateAlg.isUpdateFor(_, crossDependency)) match {
       case None => F.pure(DependencyUpToDate(crossDependency))
       case Some(update) =>
-        pullRequestRepository.findPullRequest(repo, crossDependency, update.nextVersion).map {
+        pullRequestRepository.findLatestPullRequest(repo, crossDependency, update.nextVersion).map {
           case None =>
             DependencyOutdated(crossDependency, update)
           case Some((uri, _, Closed)) =>
@@ -171,7 +164,7 @@ final class PruningAlg[F[_]](implicit
 }
 
 object PruningAlg {
-  def ignoreDependency(info: DependencyInfo, ignoreScalaDependency: Boolean = true): Boolean =
+  def ignoreDependency(info: DependencyInfo, ignoreScalaDependency: Boolean): Boolean =
     info.filesContainingVersion.isEmpty ||
       FilterAlg.isScalaDependencyIgnored(info.dependency, ignoreScalaDependency) ||
       FilterAlg.isDependencyConfigurationIgnored(info.dependency)

@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2020 Scala Steward contributors
+ * Copyright 2018-2021 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,13 +21,14 @@ import io.circe.generic.semiauto._
 import org.scalasteward.core.data.Update
 import org.scalasteward.core.git.Sha1
 import org.scalasteward.core.util.Timestamp
-import org.scalasteward.core.vcs.data.PullRequestState
+import org.scalasteward.core.vcs.data.{PullRequestNumber, PullRequestState}
 
 final case class PullRequestData(
     baseSha1: Sha1,
     update: Update,
     state: PullRequestState,
-    entryCreatedAt: Timestamp
+    entryCreatedAt: Timestamp,
+    number: Option[PullRequestNumber]
 )
 
 object PullRequestData {

@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2020 Scala Steward contributors
+ * Copyright 2018-2021 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@
 package org.scalasteward.core.edit
 
 import cats.Foldable
-import cats.implicits._
+import cats.syntax.all._
 import org.scalasteward.core.data.{GroupId, Update}
 import org.scalasteward.core.util
 import org.scalasteward.core.util.Nel
@@ -34,25 +34,37 @@ final case class UpdateHeuristic(
 )
 
 object UpdateHeuristic {
+
+  /** Removes punctuation from the input and returns it as regex that allows
+    * punctuation between characters.
+    */
+  private def toFlexibleRegex(string: String): String = {
+    val punctuation = List('.', '-', '_')
+    val allowPunctuation = punctuation.mkString("[", "", "]*")
+    string.toList
+      .collect { case c if !punctuation.contains_(c) => Regex.quote(c.toString) }
+      .intercalate(allowPunctuation)
+  }
+
   private def alternation[F[_]: Foldable](strings: F[String]): String =
     strings.mkString_("(", "|", ")")
 
   private def shouldBeIgnored(prefix: String): Boolean =
     prefix.toLowerCase.contains("previous") || prefix.trim.startsWith("//")
 
-  private def replaceGroupF(update: Update): String => Option[String] = { target =>
+  private def replaceArtifactF(update: Update): String => Option[String] = { target =>
     update match {
-      case s @ Update.Single(_, _, Some(newerGroupId)) =>
+      case s @ Update.Single(_, _, Some(newerGroupId), Some(newerArtifactId)) =>
         val currentGroupId = Regex.quote(s.groupId.value)
         val currentArtifactId = Regex.quote(s.artifactId.name)
-        val regex = s"""(?i)(.*)${currentGroupId}(.*${currentArtifactId})""".r
+        val regex = s"""(?i)(.*)$currentGroupId(.*)$currentArtifactId""".r
         replaceSomeInAllowedParts(
           regex,
           target,
           match0 => {
             val group1 = match0.group(1)
             val group2 = match0.group(2)
-            Some(s"""$group1$newerGroupId$group2""")
+            Some(s"""$group1$newerGroupId$group2$newerArtifactId""")
           }
         ).someIfChanged
       case _ => Some(target)
@@ -63,19 +75,8 @@ object UpdateHeuristic {
       getSearchTerms: Update => List[String],
       getPrefixRegex: Update => Option[String] = _ => None
   ): Update => String => Option[String] = {
-    def searchTermsToAlternation(terms: List[String]): Option[String] = {
-      val ignoreChar = ".?"
-      val ignorableStrings = List(".", "-")
-      val terms1 = terms
-        .filterNot(term => term.isEmpty || ignorableStrings.contains(term))
-        .map { term =>
-          ignorableStrings.foldLeft(term) {
-            case (term1, ignorable) => term1.replace(ignorable, ignoreChar)
-          }
-        }
-
-      if (terms1.nonEmpty) Some(alternation(terms1)) else None
-    }
+    def searchTermsToAlternation(terms: List[String]): Option[String] =
+      Nel.fromList(terms.map(toFlexibleRegex).filterNot(_.isEmpty)).map(alternation(_))
 
     def mkRegex(update: Update): Option[Regex] =
       searchTermsToAlternation(getSearchTerms(update).map(removeCommonSuffix)).map { searchTerms =>
@@ -85,7 +86,7 @@ object UpdateHeuristic {
       }
 
     def replaceF(update: Update): String => Option[String] =
-      target => replaceVersionF(update)(target) >>= replaceGroupF(update)
+      target => replaceVersionF(update)(target) >>= replaceArtifactF(update)
 
     def replaceVersionF(update: Update): String => Option[String] =
       mkRegex(update).fold((_: String) => Option.empty[String]) { regex => target =>
@@ -96,9 +97,10 @@ object UpdateHeuristic {
             val group1 = match0.group(1)
             val group2 = match0.group(2)
             val lastGroup = match0.group(match0.groupCount)
-            val versionInQuotes =
-              group2.lastOption.filter(_ === '"').fold(true)(lastGroup.headOption.contains_)
-            if (shouldBeIgnored(group1) || !versionInQuotes) None
+            if (
+              shouldBeIgnored(group1) ||
+              !enclosingCharsDelimitVersion(group2.lastOption, lastGroup.headOption)
+            ) None
             else Some(Regex.quoteReplacement(group1 + group2 + update.nextVersion + lastGroup))
           }
         ).someIfChanged
@@ -106,6 +108,14 @@ object UpdateHeuristic {
 
     replaceF
   }
+
+  private def enclosingCharsDelimitVersion(before: Option[Char], after: Option[Char]): Boolean =
+    (before, after) match {
+      case (Some('"'), c2) => c2.contains_('"')
+      case (_, Some('"'))  => false
+
+      case _ => true
+    }
 
   private def searchTerms(update: Update): List[String] = {
     val terms = update match {
@@ -118,6 +128,9 @@ object UpdateHeuristic {
 
   private def removeCommonSuffix(str: String): String =
     util.string.removeSuffix(str, Update.commonSuffixes)
+
+  private def isCommonWord(s: String): Boolean =
+    s === "scala"
 
   val moduleId = UpdateHeuristic(
     name = "moduleId",
@@ -147,7 +160,7 @@ object UpdateHeuristic {
                 )
             }
           ).someIfChanged
-        } >>= replaceGroupF(update)
+        } >>= replaceArtifactF(update)
   )
 
   val strict = UpdateHeuristic(
@@ -163,14 +176,14 @@ object UpdateHeuristic {
   val relaxed = UpdateHeuristic(
     name = "relaxed",
     replaceVersion = defaultReplaceVersion { update =>
-      util.string.extractWords(update.mainArtifactId)
+      util.string.extractWords(update.mainArtifactId).filterNot(isCommonWord)
     }
   )
 
   val sliding = UpdateHeuristic(
     name = "sliding",
     replaceVersion = defaultReplaceVersion(
-      _.mainArtifactId.toSeq.sliding(5).map(_.unwrap).take(5).filterNot(_ === "scala").toList
+      _.mainArtifactId.toSeq.sliding(5).map(_.unwrap).filterNot(isCommonWord).toList
     )
   )
 

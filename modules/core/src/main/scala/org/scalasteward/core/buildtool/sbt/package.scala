@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2020 Scala Steward contributors
+ * Copyright 2018-2021 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,8 @@
 package org.scalasteward.core.buildtool
 
 import cats.Functor
-import cats.implicits._
+import cats.syntax.all._
+import org.scalasteward.core.BuildInfo
 import org.scalasteward.core.buildtool.sbt.data.SbtVersion
 import org.scalasteward.core.data.{ArtifactId, Dependency, GroupId, Version}
 import org.scalasteward.core.io.{FileAlg, FileData}
@@ -27,25 +28,25 @@ package object sbt {
     org.scalasteward.core.BuildInfo.scalaBinaryVersion
 
   def sbtDependency(sbtVersion: SbtVersion): Option[Dependency] =
-    if (sbtVersion.toVersion >= Version("1.0.0"))
-      Some(
-        Dependency(
-          GroupId("org.scala-sbt"),
-          ArtifactId("sbt"),
-          sbtVersion.value
-        )
-      )
-    else
-      None
+    Option.when(sbtVersion.toVersion >= Version("1.0.0")) {
+      Dependency(GroupId("org.scala-sbt"), ArtifactId("sbt"), sbtVersion.value)
+    }
 
   val scalaStewardScalafixSbt: FileData =
     FileData(
       "scala-steward-scalafix.sbt",
-      """addSbtPlugin("ch.epfl.scala" % "sbt-scalafix" % "0.9.16")"""
+      """addSbtPlugin("ch.epfl.scala" % "sbt-scalafix" % "0.9.25")"""
     )
+
+  def scalaStewardScalafixOptions(scalacOptions: List[String]): FileData = {
+    val args = scalacOptions.map(s => s""""$s"""").mkString(", ")
+    FileData("scala-steward-scalafix-options.sbt", s"ThisBuild / scalacOptions ++= List($args)")
+  }
 
   def stewardPlugin[F[_]](implicit fileAlg: FileAlg[F], F: Functor[F]): F[FileData] = {
     val name = "StewardPlugin.scala"
-    fileAlg.readResource(s"org/scalasteward/plugin/$name").map(FileData(name, _))
+    fileAlg
+      .readResource(s"${BuildInfo.sbtPluginModuleRootPkg.replace('.', '/')}/$name")
+      .map(FileData(name, _))
   }
 }

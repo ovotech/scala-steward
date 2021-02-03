@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2020 Scala Steward contributors
+ * Copyright 2018-2021 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 
 package org.scalasteward.core.vcs.data
 
+import cats.Eq
 import io.circe.{KeyDecoder, KeyEncoder}
 
 final case class Repo(
@@ -26,6 +27,9 @@ final case class Repo(
 }
 
 object Repo {
+  implicit val repoEq: Eq[Repo] =
+    Eq.fromUniversalEquals
+
   implicit val repoKeyDecoder: KeyDecoder[Repo] = {
     val / = s"(.+)/([^/]+)".r
     KeyDecoder.instance {
