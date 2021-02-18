@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2020 Scala Steward contributors
+ * Copyright 2018-2021 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,40 +17,75 @@
 package org.scalasteward.core.buildtool
 
 import cats.Monad
-import cats.implicits._
+import cats.syntax.all._
 import org.scalasteward.core.buildtool.maven.MavenAlg
+import org.scalasteward.core.buildtool.mill.MillAlg
 import org.scalasteward.core.buildtool.sbt.SbtAlg
-import org.scalasteward.core.data.Scope
+import org.scalasteward.core.data.{Resolver, Scope}
 import org.scalasteward.core.scalafix.Migration
-import org.scalasteward.core.util.Nel
+import org.scalasteward.core.scalafmt.ScalafmtAlg
 import org.scalasteward.core.vcs.data.Repo
+import org.scalasteward.core.repoconfig.RepoConfigAlg
+import org.scalasteward.core.vcs.data.BuildRoot
 
-trait BuildToolDispatcher[F[_]] extends BuildToolAlg[F]
+trait BuildToolDispatcher[F[_]] extends BuildToolAlg[F, Repo]
 
 object BuildToolDispatcher {
   def create[F[_]](implicit
       mavenAlg: MavenAlg[F],
+      millAlg: MillAlg[F],
       sbtAlg: SbtAlg[F],
+      scalafmtAlg: ScalafmtAlg[F],
+      repoConfigAlg: RepoConfigAlg[F],
       F: Monad[F]
   ): BuildToolDispatcher[F] = {
-    val allBuildTools = List(sbtAlg, mavenAlg)
+    val allBuildTools = List(mavenAlg, millAlg, sbtAlg)
     val fallbackBuildTool = sbtAlg
 
     new BuildToolDispatcher[F] {
+
+      private def buildRootsForRepo(repo: Repo): F[List[BuildRoot]] = for {
+        repoConfigOpt <- repoConfigAlg.readRepoConfig(repo)
+        repoConfig <- repoConfigAlg.mergeWithDefault(repoConfigOpt)
+        buildRoots = repoConfig.buildRootsOrDefault
+          .map(config => BuildRoot(repo, config.relativePath))
+      } yield buildRoots
+
       override def containsBuild(repo: Repo): F[Boolean] =
-        allBuildTools.existsM(_.containsBuild(repo))
+        buildRootsForRepo(repo).flatMap(buildRoots =>
+          buildRoots.existsM(buildRoot => allBuildTools.existsM(_.containsBuild(buildRoot)))
+        )
 
       override def getDependencies(repo: Repo): F[List[Scope.Dependencies]] =
-        foundBuildTools(repo).flatMap(_.flatTraverse(_.getDependencies(repo)))
+        for {
+          buildRoots <- buildRootsForRepo(repo)
+          result <- buildRoots.flatTraverse(buildRoot =>
+            for {
+              dependencies <- foundBuildTools(buildRoot).flatMap(
+                _.flatTraverse(_.getDependencies(buildRoot))
+              )
+              additionalDependencies <- getAdditionalDependencies(buildRoot)
+            } yield Scope.combineByResolvers(additionalDependencies ::: dependencies)
+          )
+        } yield result
 
-      override def runMigrations(repo: Repo, migrations: Nel[Migration]): F[Unit] =
-        foundBuildTools(repo).flatMap(_.traverse_(_.runMigrations(repo, migrations)))
+      override def runMigration(repo: Repo, migration: Migration): F[Unit] =
+        buildRootsForRepo(repo).flatMap(buildRoots =>
+          buildRoots.traverse_(buildRoot =>
+            foundBuildTools(buildRoot).flatMap(_.traverse_(_.runMigration(buildRoot, migration)))
+          )
+        )
 
-      private def foundBuildTools(repo: Repo): F[List[BuildToolAlg[F]]] =
-        allBuildTools.filterA(_.containsBuild(repo)).map {
+      private def foundBuildTools(buildRoot: BuildRoot): F[List[BuildToolAlg[F, BuildRoot]]] =
+        allBuildTools.filterA(_.containsBuild(buildRoot)).map {
           case Nil  => List(fallbackBuildTool)
           case list => list
         }
+
+      def getAdditionalDependencies(buildRoot: BuildRoot): F[List[Scope.Dependencies]] =
+        scalafmtAlg
+          .getScalafmtDependency(buildRoot)
+          .map(_.map(dep => Scope(List(dep), List(Resolver.mavenCentral))).toList)
     }
   }
 }

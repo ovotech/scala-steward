@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2020 Scala Steward contributors
+ * Copyright 2018-2021 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,17 +16,23 @@
 
 package org.scalasteward.core.vcs.data
 
-import cats.implicits._
+import cats.syntax.all._
 import io.circe.Encoder
 import io.circe.generic.semiauto._
 import org.http4s.Uri
-import org.scalasteward.core.data.{GroupId, ReleaseRelatedUrl, SemVer, Update}
+import org.scalasteward.core.data.{GroupId, ReleaseRelatedUrl, SemVer, Update, UpdateData}
 import org.scalasteward.core.git
 import org.scalasteward.core.git.Branch
-import org.scalasteward.core.nurture.UpdateData
 import org.scalasteward.core.repoconfig.RepoConfigAlg
 import org.scalasteward.core.scalafix.Migration
-import org.scalasteward.core.util.{Details, Nel}
+import org.scalasteward.core.util.Details
+
+final case class UpdateState(
+    state: PullRequestState
+)
+object UpdateState {
+  implicit val updateStateEncoder: Encoder[UpdateState] = deriveEncoder
+}
 
 final case class NewPullRequestData(
     title: String,
@@ -43,29 +49,35 @@ object NewPullRequestData {
       update: Update,
       artifactIdToUrl: Map[String, Uri],
       releaseRelatedUrls: List[ReleaseRelatedUrl],
-      migrations: List[Migration]
+      migrations: List[Migration],
+      filesWithOldVersion: List[String]
   ): String = {
     val artifacts = artifactsWithOptionalUrl(update, artifactIdToUrl)
     val (migrationLabel, appliedMigrations) = migrationNote(migrations)
-    val details = ignoreFutureUpdates(update) :: appliedMigrations.toList
-    val labels =
-      Nel.fromList(List(updateType(update)) ++ semVerLabel(update).toList ++ migrationLabel.toList)
+    val (oldVersionLabel, oldVersionDetails) = oldVersionNote(filesWithOldVersion, update)
+    val details = appliedMigrations.toList ++
+      oldVersionDetails.toList ++
+      List(ignoreFutureUpdates(update))
+    val labels = List(updateType(update)) ++
+      semVerLabel(update).toList ++
+      migrationLabel.toList ++
+      oldVersionLabel.toList
 
     s"""|Updates $artifacts ${fromTo(update)}.
-       |${releaseNote(releaseRelatedUrls).getOrElse("")}
-       |
-       |I'll automatically update this PR to resolve conflicts as long as you don't change it yourself.
-       |
-       |If you'd like to skip this version, you can just close this PR. If you have any feedback, just mention me in the comments below.
-       |
-       |Configure Scala Steward for your repository with a [`${RepoConfigAlg.repoConfigBasename}`](https://github.com/fthomas/scala-steward/blob/${org.scalasteward.core.BuildInfo.gitHeadCommit}/docs/repo-specific-configuration.md) file.
-       |
-       |Have a fantastic day writing Scala!
-       |
-       |${details.map(_.toHtml).mkString("\n")}
-       |
-       |${labels.fold("")(_.mkString_("labels: ", ", ", ""))}
-       |""".stripMargin.trim
+        |${releaseNote(releaseRelatedUrls).getOrElse("")}
+        |
+        |I'll automatically update this PR to resolve conflicts as long as you don't change it yourself.
+        |
+        |If you'd like to skip this version, you can just close this PR. If you have any feedback, just mention me in the comments below.
+        |
+        |Configure Scala Steward for your repository with a [`${RepoConfigAlg.repoConfigBasename}`](https://github.com/scala-steward-org/scala-steward/blob/${org.scalasteward.core.BuildInfo.gitHeadCommit}/docs/repo-specific-configuration.md) file.
+        |
+        |Have a fantastic day writing Scala!
+        |
+        |${details.map(_.toHtml).mkString("\n")}
+        |
+        |${labels.mkString("labels: ", ", ", "")}
+        |""".stripMargin.trim
   }
 
   def updateType(update: Update): String = {
@@ -84,15 +96,15 @@ object NewPullRequestData {
     if (releaseRelatedUrls.isEmpty) None
     else
       releaseRelatedUrls
-        .map { url =>
-          url match {
-            case ReleaseRelatedUrl.CustomChangelog(url) => s"[Changelog](${url.renderString})"
-            case ReleaseRelatedUrl.CustomReleaseNotes(url) =>
-              s"[Release Notes](${url.renderString})"
-            case ReleaseRelatedUrl.GitHubReleaseNotes(url) =>
-              s"[GitHub Release Notes](${url.renderString})"
-            case ReleaseRelatedUrl.VersionDiff(url) => s"[Version Diff](${url.renderString})"
-          }
+        .map {
+          case ReleaseRelatedUrl.CustomChangelog(url) =>
+            s"[Changelog](${url.renderString})"
+          case ReleaseRelatedUrl.CustomReleaseNotes(url) =>
+            s"[Release Notes](${url.renderString})"
+          case ReleaseRelatedUrl.GitHubReleaseNotes(url) =>
+            s"[GitHub Release Notes](${url.renderString})"
+          case ReleaseRelatedUrl.VersionDiff(url) =>
+            s"[Version Diff](${url.renderString})"
         }
         .mkString(" - ")
         .some
@@ -122,14 +134,32 @@ object NewPullRequestData {
       case None      => s"$groupId:$artifactId"
     }
 
+  def oldVersionNote(files: List[String], update: Update): (Option[String], Option[Details]) =
+    if (files.isEmpty) (None, None)
+    else
+      (
+        Some("old-version-remains"),
+        Some(
+          Details(
+            "Files still referring to the old version number",
+            s"""The following files still refer to the old version number (${update.currentVersion}).
+               |You might want to review and update them manually.
+               |```
+               |${files.mkString("\n")}
+               |```
+               |""".stripMargin.trim
+          )
+        )
+      )
+
   def ignoreFutureUpdates(update: Update): Details =
     Details(
       "Ignore future updates",
       s"""|Add this to your `${RepoConfigAlg.repoConfigBasename}` file to ignore future updates of this dependency:
-         |```
-         |${RepoConfigAlg.configToIgnoreFurtherUpdates(update)}
-         |```
-         |""".stripMargin.trim
+          |```
+          |${RepoConfigAlg.configToIgnoreFurtherUpdates(update)}
+          |```
+          |""".stripMargin.trim
     )
 
   def migrationNote(migrations: List[Migration]): (Option[String], Option[Details]) =
@@ -166,7 +196,8 @@ object NewPullRequestData {
       branchName: String,
       artifactIdToUrl: Map[String, Uri] = Map.empty,
       releaseRelatedUrls: List[ReleaseRelatedUrl] = List.empty,
-      migrations: List[Migration] = List.empty
+      migrations: List[Migration] = List.empty,
+      filesWithOldVersion: List[String] = List.empty
   ): NewPullRequestData =
     NewPullRequestData(
       title = git.commitMsgFor(data.update, data.repoConfig.commits),
@@ -174,7 +205,8 @@ object NewPullRequestData {
         data.update,
         artifactIdToUrl,
         releaseRelatedUrls,
-        migrations
+        migrations,
+        filesWithOldVersion
       ),
       head = branchName,
       base = data.baseBranch

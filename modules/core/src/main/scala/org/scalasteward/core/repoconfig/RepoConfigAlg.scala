@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2020 Scala Steward contributors
+ * Copyright 2018-2021 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,33 +16,41 @@
 
 package org.scalasteward.core.repoconfig
 
+import better.files.File
+import cats.MonadThrow
 import cats.data.OptionT
-import cats.implicits._
+import cats.syntax.all._
 import io.chrisdavenport.log4cats.Logger
 import io.circe.config.parser
+import org.scalasteward.core.application.Config
 import org.scalasteward.core.data.Update
 import org.scalasteward.core.io.{FileAlg, WorkspaceAlg}
 import org.scalasteward.core.repoconfig.RepoConfigAlg._
-import org.scalasteward.core.util.MonadThrowable
 import org.scalasteward.core.vcs.data.Repo
 
-final class RepoConfigAlg[F[_]](implicit
+final class RepoConfigAlg[F[_]](config: Config)(implicit
     fileAlg: FileAlg[F],
     logger: Logger[F],
     workspaceAlg: WorkspaceAlg[F],
-    F: MonadThrowable[F]
+    F: MonadThrow[F]
 ) {
-  def readRepoConfigOrDefault(repo: Repo): F[RepoConfig] =
-    readRepoConfig(repo).map(_.getOrElse(RepoConfig.default))
+  def mergeWithDefault(maybeRepoConfig: Option[RepoConfig]): F[RepoConfig] =
+    readDefaultRepoConfig.map { maybeDefault =>
+      (maybeRepoConfig |+| maybeDefault).getOrElse(RepoConfig.empty)
+    }
+
+  private val readDefaultRepoConfig: F[Option[RepoConfig]] =
+    config.defaultRepoConfigFile.flatTraverse(readRepoConfigFromFile(_).value)
 
   def readRepoConfig(repo: Repo): F[Option[RepoConfig]] =
-    workspaceAlg.repoDir(repo).flatMap { dir =>
-      val configFile = dir / repoConfigBasename
-      val maybeRepoConfig = OptionT(fileAlg.readFile(configFile)).map(parseRepoConfig).flatMapF {
-        case Right(config)  => logger.info(s"Parsed $config").as(config.some)
-        case Left(errorMsg) => logger.info(errorMsg).as(none[RepoConfig])
-      }
-      maybeRepoConfig.value
+    workspaceAlg
+      .repoDir(repo)
+      .flatMap(dir => readRepoConfigFromFile(dir / repoConfigBasename).value)
+
+  private def readRepoConfigFromFile(configFile: File): OptionT[F, RepoConfig] =
+    OptionT(fileAlg.readFile(configFile)).map(parseRepoConfig).flatMapF {
+      case Right(repoConfig) => logger.info(s"Parsed $repoConfig").as(repoConfig.some)
+      case Left(errorMsg)    => logger.info(errorMsg).as(none[RepoConfig])
     }
 }
 

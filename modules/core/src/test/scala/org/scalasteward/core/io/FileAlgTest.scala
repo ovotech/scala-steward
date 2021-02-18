@@ -2,15 +2,15 @@ package org.scalasteward.core.io
 
 import better.files.File
 import cats.effect.IO
+import munit.FunSuite
+import org.http4s.Uri
 import org.scalacheck.Arbitrary
 import org.scalasteward.core.TestInstances.ioLogger
 import org.scalasteward.core.io.FileAlgTest.ioFileAlg
-import org.scalasteward.core.mock.MockContext.fileAlg
+import org.scalasteward.core.mock.MockContext.context.fileAlg
 import org.scalasteward.core.mock.MockState
-import org.scalatest.funsuite.AnyFunSuite
-import org.scalatest.matchers.should.Matchers
 
-class FileAlgTest extends AnyFunSuite with Matchers {
+class FileAlgTest extends FunSuite {
   test("createTemporarily") {
     val file = File.temp / "test-scala-steward3.tmp"
     val content = Arbitrary.arbitrary[String].sample.getOrElse("")
@@ -21,7 +21,7 @@ class FileAlgTest extends AnyFunSuite with Matchers {
       after <- ioFileAlg.readFile(file)
     } yield (before, during, after)
 
-    p.unsafeRunSync() shouldBe ((None, Some(content), None))
+    assertEquals(p.unsafeRunSync(), (None, Some(content), None))
   }
 
   test("writeFile *> readFile <* deleteForce") {
@@ -30,7 +30,7 @@ class FileAlgTest extends AnyFunSuite with Matchers {
     val read = ioFileAlg.writeFile(file, content) *>
       ioFileAlg.readFile(file).map(_.getOrElse("")) <*
       ioFileAlg.deleteForce(file)
-    read.unsafeRunSync() shouldBe content
+    assertEquals(read.unsafeRunSync(), content)
   }
 
   test("removeTemporarily") {
@@ -44,12 +44,12 @@ class FileAlgTest extends AnyFunSuite with Matchers {
       after <- ioFileAlg.readFile(file)
     } yield (before, during, after)
 
-    p.unsafeRunSync() shouldBe ((Some(content), None, Some(content)))
+    assertEquals(p.unsafeRunSync(), (Some(content), None, Some(content)))
   }
 
   test("removeTemporarily: nonexistent file") {
     val file = File.temp / "does-not-exists.txt"
-    ioFileAlg.removeTemporarily(file)(IO.pure(42)).unsafeRunSync() shouldBe 42
+    assertEquals(ioFileAlg.removeTemporarily(file)(IO.pure(42)).unsafeRunSync(), 42)
   }
 
   test("editFile: nonexistent file") {
@@ -58,23 +58,21 @@ class FileAlgTest extends AnyFunSuite with Matchers {
       edited <- fileAlg.editFile(home / "does-not-exists.txt", Some.apply)
     } yield edited).run(MockState.empty).unsafeRunSync()
 
-    state shouldBe MockState.empty.copy(
-      commands = Vector(
-        List("read", "/tmp/steward/does-not-exists.txt")
-      )
-    )
-    edited shouldBe false
+    val expected =
+      MockState.empty.copy(commands = Vector(List("read", "/tmp/steward/does-not-exists.txt")))
+    assertEquals(state, expected)
+    assert(!edited)
   }
 
   test("editFile: existent file") {
-    val file = File.root / "tmp" / "steward" / "test1.sbt"
+    val file = File.temp / "steward" / "test1.sbt"
     val (state, edited) = (for {
       _ <- fileAlg.writeFile(file, "123")
       edit = (s: String) => Some(s.replace("2", "4"))
       edited <- fileAlg.editFile(file, edit)
     } yield edited).run(MockState.empty).unsafeRunSync()
 
-    state shouldBe MockState.empty.copy(
+    val expected = MockState.empty.copy(
       commands = Vector(
         List("write", file.pathAsString),
         List("read", file.pathAsString),
@@ -82,7 +80,47 @@ class FileAlgTest extends AnyFunSuite with Matchers {
       ),
       files = Map(file -> "143")
     )
-    edited shouldBe true
+    assertEquals(state, expected)
+    assert(edited)
+  }
+
+  test("deleteForce removes dangling symlink in subdirectory") {
+    val dir = File.temp / "steward-symlink"
+    val sub = dir / "sub"
+    val regular = dir / "regular"
+    val symlink = sub / "symlink"
+    val p = for {
+      _ <- IO(dir.delete(swallowIOExceptions = true))
+      _ <- ioFileAlg.writeFile(regular, "I'm a regular file")
+      _ <- IO(sub.createDirectory())
+      _ <- IO(symlink.symbolicLinkTo(regular))
+      _ <- ioFileAlg.deleteForce(regular)
+      _ <- ioFileAlg.deleteForce(dir)
+      symlinkExists <- IO(symlink.exists(File.LinkOptions.noFollow))
+    } yield symlinkExists
+    assertEquals(p.unsafeRunSync(), false)
+  }
+
+  test("readUri: local file without scheme") {
+    val file = File.temp / "steward" / "readUri.txt"
+    val content = "42"
+    val p = for {
+      _ <- ioFileAlg.writeFile(file, content)
+      read <- ioFileAlg.readUri(Uri.unsafeFromString(file.toString))
+    } yield read
+    assertEquals(p.unsafeRunSync(), content)
+  }
+
+  test("isRegularFile") {
+    val dir = File.temp / "steward" / "regular"
+    val file = dir / "file.txt"
+    val p = for {
+      _ <- ioFileAlg.deleteForce(dir)
+      r1 <- ioFileAlg.isRegularFile(file)
+      _ <- ioFileAlg.writeFileData(dir, FileData("file.txt", "content"))
+      r2 <- ioFileAlg.isRegularFile(file)
+    } yield (r1, r2)
+    assertEquals(p.unsafeRunSync(), (false, true))
   }
 }
 

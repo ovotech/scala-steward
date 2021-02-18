@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2020 Scala Steward contributors
+ * Copyright 2018-2021 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,39 +18,46 @@ package org.scalasteward.core.buildtool.maven
 
 import better.files.File
 import cats.Monad
-import cats.implicits._
+import cats.syntax.all._
 import org.scalasteward.core.application.Config
 import org.scalasteward.core.buildtool.BuildToolAlg
 import org.scalasteward.core.data._
 import org.scalasteward.core.io.{FileAlg, ProcessAlg, WorkspaceAlg}
 import org.scalasteward.core.scalafix.Migration
 import org.scalasteward.core.util.Nel
-import org.scalasteward.core.vcs.data.Repo
+import org.scalasteward.core.vcs.data.BuildRoot
 
-trait MavenAlg[F[_]] extends BuildToolAlg[F]
+trait MavenAlg[F[_]] extends BuildToolAlg[F, BuildRoot]
 
 object MavenAlg {
-  def create[F[_]](implicit
-      config: Config,
+  def create[F[_]](config: Config)(implicit
       fileAlg: FileAlg[F],
       processAlg: ProcessAlg[F],
       workspaceAlg: WorkspaceAlg[F],
       F: Monad[F]
   ): MavenAlg[F] =
     new MavenAlg[F] {
-      override def containsBuild(repo: Repo): F[Boolean] =
-        workspaceAlg.repoDir(repo).flatMap(repoDir => fileAlg.isRegularFile(repoDir / "pom.xml"))
+      override def containsBuild(buildRoot: BuildRoot): F[Boolean] =
+        workspaceAlg
+          .buildRootDir(buildRoot)
+          .flatMap(buildRootDir => fileAlg.isRegularFile(buildRootDir / "pom.xml"))
 
-      override def getDependencies(repo: Repo): F[List[Scope.Dependencies]] =
+      override def getDependencies(buildRoot: BuildRoot): F[List[Scope.Dependencies]] =
         for {
-          repoDir <- workspaceAlg.repoDir(repo)
-          dependenciesRaw <- exec(mvnCmd(command.listDependencies), repoDir)
-          repositoriesRaw <- exec(mvnCmd(command.listRepositories), repoDir)
+          buildRootDir <- workspaceAlg.buildRootDir(buildRoot)
+          dependenciesRaw <- exec(
+            mvnCmd(command.listDependencies),
+            buildRootDir
+          )
+          repositoriesRaw <- exec(
+            mvnCmd(command.listRepositories),
+            buildRootDir
+          )
           dependencies = parser.parseDependencies(dependenciesRaw).distinct
           resolvers = parser.parseResolvers(repositoriesRaw).distinct
         } yield List(Scope(dependencies, resolvers))
 
-      override def runMigrations(repo: Repo, migrations: Nel[Migration]): F[Unit] =
+      override def runMigration(buildRoot: BuildRoot, migration: Migration): F[Unit] =
         F.unit
 
       def exec(command: Nel[String], repoDir: File): F[List[String]] =

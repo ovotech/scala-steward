@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2020 Scala Steward contributors
+ * Copyright 2018-2021 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,32 +17,42 @@
 package org.scalasteward.core.scalafmt
 
 import cats.data.Nested
-import cats.implicits._
+import cats.syntax.all._
 import cats.{Functor, Monad}
-import org.scalasteward.core.buildtool.sbt.defaultScalaBinaryVersion
 import org.scalasteward.core.data.{Dependency, Version}
-import org.scalasteward.core.io.{FileAlg, WorkspaceAlg}
-import org.scalasteward.core.vcs.data.Repo
+import org.scalasteward.core.io.{FileAlg, ProcessAlg, WorkspaceAlg}
+import org.scalasteward.core.util.Nel
+import org.scalasteward.core.vcs.data.BuildRoot
 
 trait ScalafmtAlg[F[_]] {
-  def getScalafmtVersion(repo: Repo): F[Option[Version]]
+  def getScalafmtVersion(buildRoot: BuildRoot): F[Option[Version]]
 
-  final def getScalafmtDependency(repo: Repo)(implicit F: Functor[F]): F[Option[Dependency]] =
-    Nested(getScalafmtVersion(repo)).map(scalafmtDependency(defaultScalaBinaryVersion)).value
+  def version: F[String]
+
+  final def getScalafmtDependency(buildRoot: BuildRoot)(implicit
+      F: Functor[F]
+  ): F[Option[Dependency]] =
+    Nested(getScalafmtVersion(buildRoot)).map(scalafmtDependency).value
 }
 
 object ScalafmtAlg {
   def create[F[_]](implicit
       fileAlg: FileAlg[F],
       workspaceAlg: WorkspaceAlg[F],
+      processAlg: ProcessAlg[F],
       F: Monad[F]
   ): ScalafmtAlg[F] =
     new ScalafmtAlg[F] {
-      override def getScalafmtVersion(repo: Repo): F[Option[Version]] =
+      override def getScalafmtVersion(buildRoot: BuildRoot): F[Option[Version]] =
         for {
-          repoDir <- workspaceAlg.repoDir(repo)
-          scalafmtConfFile = repoDir / ".scalafmt.conf"
+          buildRootDir <- workspaceAlg.buildRootDir(buildRoot)
+          scalafmtConfFile = buildRootDir / ".scalafmt.conf"
           fileContent <- fileAlg.readFile(scalafmtConfFile)
         } yield fileContent.flatMap(parseScalafmtConf)
+
+      override def version: F[String] =
+        workspaceAlg.rootDir
+          .flatMap(processAlg.exec(Nel.of(scalafmtBinary, "--version"), _))
+          .map(_.mkString.trim)
     }
 }

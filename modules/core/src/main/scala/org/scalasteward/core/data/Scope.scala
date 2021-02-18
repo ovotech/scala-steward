@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2020 Scala Steward contributors
+ * Copyright 2018-2021 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,6 +31,11 @@ final case class Scope[A](value: A, resolvers: List[Resolver])
 object Scope {
   type Dependency = Scope[org.scalasteward.core.data.Dependency]
   type Dependencies = Scope[List[org.scalasteward.core.data.Dependency]]
+
+  def combineByResolvers[A: Order](scopes: List[Scope[List[A]]]): List[Scope[List[A]]] =
+    scopes.groupByNel(_.resolvers).toList.map { case (resolvers, group) =>
+      Scope(group.reduceMap(_.value).distinct.sorted, resolvers)
+    }
 
   implicit def scopeTraverse: Traverse[Scope] =
     new Traverse[Scope] {

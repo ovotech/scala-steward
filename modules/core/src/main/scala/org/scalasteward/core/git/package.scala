@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2020 Scala Steward contributors
+ * Copyright 2018-2021 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,8 +19,11 @@ package org.scalasteward.core
 import org.scalasteward.core.data.Update
 import org.scalasteward.core.repoconfig.CommitsConfig
 import org.scalasteward.core.update.show
+import org.scalasteward.core.vcs.data.Repo
 
 package object git {
+  type GitAlg[F[_]] = GenGitAlg[F, Repo]
+
   def branchFor(update: Update): Branch =
     Branch(s"update/${update.name}-${update.nextVersion}")
 
@@ -33,12 +36,4 @@ package object git {
       .replace("${currentVersion}", update.currentVersion)
       .replace("${nextVersion}", update.nextVersion)
   }
-
-  // man 7 gitrevisions:
-  // When you have two commits r1 and r2 you can ask for commits that are
-  // reachable from r2 excluding those that are reachable from r1 by ^r1 r2
-  // and it can be written as
-  //   r1..r2.
-  def dotdot(r1: Branch, r2: Branch): String =
-    s"${r1.name}..${r2.name}"
 }

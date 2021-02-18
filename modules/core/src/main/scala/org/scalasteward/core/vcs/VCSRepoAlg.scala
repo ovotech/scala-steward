@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2020 Scala Steward contributors
+ * Copyright 2018-2021 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,45 +16,47 @@
 
 package org.scalasteward.core.vcs
 
-import cats.implicits._
+import cats.MonadThrow
+import cats.syntax.all._
+import io.chrisdavenport.log4cats.Logger
 import org.http4s.Uri
 import org.http4s.Uri.UserInfo
 import org.scalasteward.core.application.Config
-import org.scalasteward.core.git.{Branch, GitAlg}
+import org.scalasteward.core.git.GitAlg
 import org.scalasteward.core.util
-import org.scalasteward.core.util.MonadThrowable
+import org.scalasteward.core.util.logger._
 import org.scalasteward.core.vcs.data.{Repo, RepoOut}
 
-trait VCSRepoAlg[F[_]] {
-  def clone(repo: Repo, repoOut: RepoOut): F[Unit]
+final class VCSRepoAlg[F[_]](config: Config)(implicit
+    gitAlg: GitAlg[F],
+    logger: Logger[F],
+    F: MonadThrow[F]
+) {
+  def cloneAndSync(repo: Repo, repoOut: RepoOut): F[Unit] =
+    for {
+      _ <-
+        if (config.doNotFork) logger.info(s"Clone ${repo.show}")
+        else logger.info(s"Clone and synchronize ${repo.show}")
+      _ <- clone(repo, repoOut)
+      _ <- syncFork(repo, repoOut)
+      _ <- logger.attemptLogWarn_("Initializing and cloning submodules failed") {
+        gitAlg.initSubmodules(repo)
+      }
+    } yield ()
 
-  def defaultBranch(repoOut: RepoOut): F[Branch]
+  private def clone(repo: Repo, repoOut: RepoOut): F[Unit] =
+    for {
+      _ <- gitAlg.clone(repo, withLogin(repoOut.clone_url))
+      _ <- gitAlg.setAuthor(repo, config.gitCfg.gitAuthor)
+    } yield ()
 
-  def syncFork(repo: Repo, repoOut: RepoOut): F[Unit]
-}
+  private[vcs] def syncFork(repo: Repo, repoOut: RepoOut): F[Unit] =
+    if (config.doNotFork) F.unit
+    else
+      repoOut.parentOrRaise[F].flatMap { parent =>
+        gitAlg.syncFork(repo, withLogin(parent.clone_url), parent.default_branch)
+      }
 
-object VCSRepoAlg {
-  def create[F[_]: MonadThrowable](config: Config, gitAlg: GitAlg[F]): VCSRepoAlg[F] =
-    new VCSRepoAlg[F] {
-      override def clone(repo: Repo, repoOut: RepoOut): F[Unit] =
-        for {
-          _ <- gitAlg.clone(repo, withLogin(repoOut.clone_url))
-          _ <- gitAlg.setAuthor(repo, config.gitAuthor)
-        } yield ()
-
-      override def defaultBranch(repoOut: RepoOut): F[Branch] =
-        if (config.doNotFork) repoOut.default_branch.pure[F]
-        else repoOut.parentOrRaise[F].map(_.default_branch)
-
-      override def syncFork(repo: Repo, repoOut: RepoOut): F[Unit] =
-        if (config.doNotFork) ().pure[F]
-        else
-          for {
-            parent <- repoOut.parentOrRaise[F]
-            _ <- gitAlg.syncFork(repo, withLogin(parent.clone_url), parent.default_branch)
-          } yield ()
-
-      val withLogin: Uri => Uri =
-        util.uri.withUserInfo.set(UserInfo(config.vcsLogin, None))
-    }
+  private val withLogin: Uri => Uri =
+    util.uri.withUserInfo.set(UserInfo(config.vcsLogin, None))
 }

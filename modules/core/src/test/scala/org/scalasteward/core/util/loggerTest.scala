@@ -1,30 +1,35 @@
 package org.scalasteward.core.util
 
-import cats.effect.Sync
-import org.scalasteward.core.mock.MockContext._
+import cats.{Applicative, ApplicativeThrow}
+import munit.FunSuite
+import org.scalasteward.core.mock.MockContext.context._
 import org.scalasteward.core.mock.{MockEff, MockState}
 import org.scalasteward.core.util.logger.LoggerOps
-import org.scalatest.funsuite.AnyFunSuite
-import org.scalatest.matchers.should.Matchers
 
-class loggerTest extends AnyFunSuite with Matchers {
-  test("attemptLog_") {
+class loggerTest extends FunSuite {
+  test("attemptLog") {
     final case class Err(msg: String) extends Throwable(msg)
     val err = Err("hmm?")
-    val state = mockLogger
-      .attemptLog_("run")(Sync[MockEff].raiseError(err))
+    val state = logger
+      .attemptLogLabel("run")(ApplicativeThrow[MockEff].raiseError(err))
       .runS(MockState.empty)
       .unsafeRunSync()
-
-    state.logs shouldBe Vector((None, "run"), (Some(err), "run failed"))
+    assertEquals(state.logs, Vector((None, "run"), (Some(err), "run failed")))
   }
 
   test("infoTimed") {
-    val state = mockLogger
-      .infoTimed(_ => "timed")(mockLogger.info("inner"))
+    val state = logger
+      .infoTimed(_ => "timed")(logger.info("inner"))
       .runS(MockState.empty)
       .unsafeRunSync()
+    assertEquals(state.logs, Vector((None, "inner"), (None, "timed")))
+  }
 
-    state.logs shouldBe Vector((None, "inner"), (None, "timed"))
+  test("infoTotalTime") {
+    val state = logger
+      .infoTotalTime("run")(Applicative[MockEff].unit)
+      .runS(MockState.empty)
+      .unsafeRunSync()
+    assertEquals(state.logs.size, 1)
   }
 }

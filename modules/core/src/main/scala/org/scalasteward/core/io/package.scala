@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2020 Scala Steward contributors
+ * Copyright 2018-2021 Scala Steward contributors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,8 +17,9 @@
 package org.scalasteward.core
 
 import better.files.File
-import cats.implicits._
+import cats.syntax.all._
 import org.scalasteward.core.data.{GroupId, Update}
+import org.scalasteward.core.scalafmt.{scalafmtArtifactId, scalafmtGroupId}
 
 package object io {
   def isSourceFile(update: Update, fileExtensions: Set[String])(file: File): Boolean = {
@@ -43,6 +44,6 @@ package object io {
       update.artifactIds.exists(_.name === "sbt")
 
   private def isScalafmtCoreUpdate(update: Update): Boolean =
-    update.groupId === GroupId("org.scalameta") &&
-      update.artifactIds.exists(_.name === "scalafmt-core")
+    update.groupId === scalafmtGroupId &&
+      update.artifactIds.exists(_.name === scalafmtArtifactId.name)
 }

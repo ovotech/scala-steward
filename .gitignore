@@ -12,3 +12,12 @@ workspace/
 .bloop/
 .metals/
 metals.sbt
+
+.bsp/
+
+
+#Workspace Tooling
+.envrc
+nix
+shell.nix
+
