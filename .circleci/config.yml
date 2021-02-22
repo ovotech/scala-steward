@@ -69,7 +69,7 @@ jobs:
           name: Publish docker image
           command: |
             `aws ecr get-login --registry-ids $AWS_ACCOUNT_ID --no-include-email --region eu-west-1`
-            sbt docker:publish < /dev/null
+            sbt core/docker:publish < /dev/null
   rotate-aws-keys:
     docker:
       - image: circleci/python:3-buster
